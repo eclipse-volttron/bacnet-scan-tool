@@ -1,7 +1,17 @@
+import asyncio
+import json
+
 from fastapi import FastAPI, HTTPException, Depends
 from sqlmodel import SQLModel, Session, create_engine, select
+
+from src.protocol_proxy.bacnet_proxy import BACnetProxy
+from src.protocol_proxy.ipc import ProtocolProxyMessage
+from src.protocol_proxy.manager import ProtocolProxyManager
 from . models import Device, Point, Tag, CreateTagRequest, WritePointValueRequest
 
+
+
+# TODO handle who is AND just one device.
 app = FastAPI()
 
 # SQLite database setup
@@ -16,6 +26,71 @@ def get_session():
     with Session(engine) as session:
         yield session
 
+@app.get("/query_device")
+async def query_device(address: str, property_name: str):
+
+    ppm = ProtocolProxyManager.get_manager(BACnetProxy)
+
+    message = ProtocolProxyMessage(
+        method_name="QUERY_DEVICE",
+        payload=json.dumps({
+        "address": address,
+        "object_identifier": 'device:4194303',
+        "property_name": property_name
+    }).encode('utf8'))
+
+    remote_params = ppm.peers.socket_params
+    send_result = ppm.send(remote_params, message)
+    print("Sent READ_PROPERTY message")
+    return send_result
+
+@app.get("/read_property")
+async def read_property(device_address: str, object_identifier: str, property_identifier: str,
+                               property_array_index: int = None):
+
+    ppm = ProtocolProxyManager.get_manager(BACnetProxy)
+
+    message = ProtocolProxyMessage(
+        method_name="READ_PROPERTY",
+        payload=json.dumps({
+        "device_address": device_address,
+        "object_identifier": object_identifier,
+        "property_identifier": property_identifier,
+        "property_array_index": property_array_index
+    }).encode('utf8'))
+
+    remote_params = ppm.peers.socket_params
+    send_result = ppm.send(remote_params, message)
+    print("Sent READ_PROPERTY message")
+
+    return send_result
+
+@app.post("/write_property")
+async def write_property(device_address: str, object_identifier: str, property_identifier: str, value: any,
+                         priority: int, property_array_index: int = None):
+    """
+    Write a value to a specific property of a device point.
+    """
+    ppm = ProtocolProxyManager.get_manager(BACnetProxy)
+    message = ProtocolProxyMessage(
+        method_name="WRITE_PROPERTY",
+        payload=json.dumps({
+            "device_address": device_address,
+            "object_identifier": object_identifier,
+            "property_identifier": property_identifier,
+            "value": value,
+            "priority": priority,
+            "property_array_index": property_array_index
+        }).encode('utf8')
+    )
+
+    remote_params = ppm.peers.socket_params
+    send_result = ppm.send(remote_params, message)
+    print("Sent WRITE_PROPERTY message")
+
+    return send_result
+
+#TODO what does "start" actuall mean, how will this work and what is the intended logic of this?
 @app.get("/{tool}/scan/start")
 async def start_bacnet_discovery(tool: str, ip_address: str, session: Session = Depends(get_session)):
     if tool != "bacnet":
