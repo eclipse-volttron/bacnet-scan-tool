@@ -3,7 +3,7 @@ import json
 import uuid
 from typing import Optional, Any
 
-from fastapi import FastAPI, HTTPException, Depends, Form, Query
+from fastapi import FastAPI, HTTPException, Depends, Form, Query, Body
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from protocol_proxy.bacnet_proxy import BACnetProxy
@@ -20,9 +20,15 @@ app = FastAPI()
 DATABASE_URL = "sqlite:///./bacnet.db"
 engine = create_engine(DATABASE_URL)
 
+BACNET_PROXY_LOCAL_ADDRESS = "172.18.229.191"
+
 @app.on_event("startup")
 async def on_startup():
     SQLModel.metadata.create_all(engine)
+    from protocol_proxy.bacnet_manager import AsyncioBACnetManager
+    app.state.bacnet_manager = AsyncioBACnetManager(BACNET_PROXY_LOCAL_ADDRESS)
+    app.state.bacnet_manager_task = asyncio.create_task(app.state.bacnet_manager.run())
+    await asyncio.sleep(3)  # Give proxy time to start and register
 
 def get_session():
     with Session(engine) as session:
@@ -135,9 +141,6 @@ async def write_point_value(device_id: int, point_id: int, request: WritePointVa
     # Simulate writing a value
     return {"message": f"Value '{request.value}' written to point {point_id} of device {device_id}"}
 
-# Hardcoded BACnet proxy LAN IP (can be made configurable later)
-BACNET_PROXY_LOCAL_ADDRESS = "172.18.229.191"
-
 @app.post("/read_property")
 async def read_property(
     device_address: str = Form(...),
@@ -148,22 +151,14 @@ async def read_property(
     """
     Perform a BACnet property read and return the result directly (waits for completion).
     """
-    from protocol_proxy.bacnet_manager import AsyncioBACnetManager
     from protocol_proxy.ipc import ProtocolProxyMessage
     import json
-    print("[read_property] Starting BACnet manager...")
+    print("[read_property] Using global AsyncioBACnetManager from app.state...")
     try:
-        manager = AsyncioBACnetManager(BACNET_PROXY_LOCAL_ADDRESS)
-        print("[read_property] Created AsyncioBACnetManager")
-        task = asyncio.create_task(manager.run())
-        print("[read_property] Started manager.run() background task")
-        await asyncio.sleep(3)  # Give the proxy time to start and register
-        print("[read_property] Slept 3 seconds, checking proxy registration...")
-
+        manager = app.state.bacnet_manager
+        # Wait for proxy registration
         proxy_id = manager.ppm.get_proxy_id((BACNET_PROXY_LOCAL_ADDRESS, 0))
-        print(f"[read_property] proxy_id: {proxy_id}")
         peer = manager.ppm.peers.get(proxy_id)
-        print(f"[read_property] peer: {peer}")
         if not peer or not peer.socket_params:
             print("[read_property] Proxy not registered or missing socket_params!")
             return {"status": "error", "error": "Proxy not registered or missing socket_params, cannot send request."}
@@ -234,6 +229,98 @@ async def ping_ip(ip_address: str = Form(...)):
             "error": str(e)
         }
 
+@app.post("/bacnet/scan_ip_range")
+async def scan_ip_range(network_str: str = Form(...)):
+    """
+    Scan a range of IPs for BACnet devices.
+    """
+    manager = app.state.bacnet_manager
+    proxy_id = manager.ppm.get_proxy_id((BACNET_PROXY_LOCAL_ADDRESS, 0))
+    peer = manager.ppm.peers.get(proxy_id)
+    if not peer or not peer.socket_params:
+        return {"status": "error", "error": "Proxy not registered or missing, cannot scan."}
+    from protocol_proxy.ipc import ProtocolProxyMessage
+    import json
+    payload = {"network_str": network_str}
+    result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
+        method_name="SCAN_IP_RANGE",
+        payload=json.dumps(payload).encode('utf8'),
+        response_expected=True
+    ))
+    if asyncio.isfuture(result):
+        result = await result
+    try:
+        value = json.loads(result.decode('utf8'))
+        return {"status": "done", "devices": value}
+    except Exception as e:
+        return {"status": "error", "error": f"Error decoding scan_ip_range response: {e}"}
+
+@app.post("/bacnet/read_device_all")
+async def read_device_all(
+    device_address: str = Form(...),
+    device_object_identifier: str = Form(...)
+):
+    """
+    Read all standard properties from a BACnet device.
+    """
+    manager = app.state.bacnet_manager
+    proxy_id = manager.ppm.get_proxy_id((BACNET_PROXY_LOCAL_ADDRESS, 0))
+    peer = manager.ppm.peers.get(proxy_id)
+    if not peer or not peer.socket_params:
+        return {"status": "error", "error": "Proxy not registered or missing, cannot read device."}
+    from protocol_proxy.ipc import ProtocolProxyMessage
+    import json
+    payload = {
+        "device_address": device_address,
+        "device_object_identifier": device_object_identifier
+    }
+    result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
+        method_name="READ_DEVICE_ALL",
+        payload=json.dumps(payload).encode('utf8'),
+        response_expected=True
+    ))
+    if asyncio.isfuture(result):
+        result = await result
+    try:
+        value = json.loads(result.decode('utf8'))
+        return {"status": "done", "properties": value}
+    except Exception as e:
+        return {"status": "error", "error": f"Error decoding read_device_all response: {e}"}
+
+#TODO create callbacks
+@app.post("/bacnet/who_is")
+async def who_is(
+    device_instance_low: int = Form(...),
+    device_instance_high: int = Form(...),
+    dest: str = Form(...)
+):
+    """
+    Send a Who-Is request to a BACnet address or range.
+    """
+    manager = app.state.bacnet_manager
+    proxy_id = manager.ppm.get_proxy_id((BACNET_PROXY_LOCAL_ADDRESS, 0))
+    peer = manager.ppm.peers.get(proxy_id)
+    if not peer or not peer.socket_params:
+        return {"status": "error", "error": "Proxy not registered or missing, cannot send Who-Is."}
+    from protocol_proxy.ipc import ProtocolProxyMessage
+    import json
+    payload = {
+        "device_instance_low": device_instance_low,
+        "device_instance_high": device_instance_high,
+        "dest": dest
+    }
+    result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
+        method_name="WHO_IS",
+        payload=json.dumps(payload).encode('utf8'),
+        response_expected=True
+    ))
+    if asyncio.isfuture(result):
+        result = await result
+    try:
+        value = json.loads(result.decode('utf8'))
+        return {"status": "done", "devices": value}
+    except Exception as e:
+        return {"status": "error", "error": f"Error decoding who_is response: {e}"}
 # Temporary stubs to avoid NameError in endpoints
 # TODO: Replace with real device/point discovery logic
 
