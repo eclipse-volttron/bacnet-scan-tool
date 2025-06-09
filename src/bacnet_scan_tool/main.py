@@ -4,6 +4,7 @@ import uuid
 from typing import Optional, Any
 
 from fastapi import FastAPI, HTTPException, Depends, Form, Query, Body
+from fastapi.responses import JSONResponse  # <-- Added import
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from protocol_proxy.bacnet_proxy import BACnetProxy
@@ -255,6 +256,33 @@ async def scan_ip_range(network_str: str = Form(...)):
     except Exception as e:
         return {"status": "error", "error": f"Error decoding scan_ip_range response: {e}"}
 
+def make_jsonable(obj):
+    """
+    Recursively convert BACnet objects, enums, and tuples to JSON-serializable types.
+    """
+    import ipaddress
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, bytes):
+        return obj.decode('utf-8', errors='replace')
+    if isinstance(obj, bytearray):
+        return bytes(obj).decode('utf-8', errors='replace')
+    if isinstance(obj, dict):
+        return {make_jsonable(k): make_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, set, tuple)):
+        return [make_jsonable(x) for x in obj]
+    if hasattr(obj, 'name') and hasattr(obj, 'value'):
+        # Likely an enum
+        return str(obj.name)
+    if hasattr(obj, '__class__') and obj.__class__.__name__.startswith('ObjectType'):
+        return str(obj)
+    if isinstance(obj, ipaddress.IPv4Address) or isinstance(obj, ipaddress.IPv6Address):
+        return str(obj)
+    # Fallback to string
+    return str(obj)
+
 @app.post("/bacnet/read_device_all")
 async def read_device_all(
     device_address: str = Form(...),
@@ -267,7 +295,7 @@ async def read_device_all(
     proxy_id = manager.ppm.get_proxy_id((BACNET_PROXY_LOCAL_ADDRESS, 0))
     peer = manager.ppm.peers.get(proxy_id)
     if not peer or not peer.socket_params:
-        return {"status": "error", "error": "Proxy not registered or missing, cannot read device."}
+        return JSONResponse(content={"status": "error", "error": "Proxy not registered or missing, cannot read device."}, status_code=500)
     from protocol_proxy.ipc import ProtocolProxyMessage
     import json
     payload = {
@@ -281,11 +309,15 @@ async def read_device_all(
     ))
     if asyncio.isfuture(result):
         result = await result
+    print(f"[read_device_all] Raw result bytes: {result}")
     try:
         value = json.loads(result.decode('utf8'))
-        return {"status": "done", "properties": value}
+        jsonable = make_jsonable(value)
+        print(f"[read_device_all FastAPI] Returning to frontend: {jsonable}", 50 * "*")
+        return JSONResponse(content={"status": "done", "properties": jsonable})
     except Exception as e:
-        return {"status": "error", "error": f"Error decoding read_device_all response: {e}"}
+        print(f"[read_device_all] Error decoding or serializing response: {e}")
+        return JSONResponse(content={"status": "error", "error": f"Error decoding read_device_all response: {e}"}, status_code=500)
 
 #TODO create callbacks
 @app.post("/bacnet/who_is")
