@@ -7,9 +7,6 @@ from fastapi import FastAPI, HTTPException, Depends, Form, Query, Body
 from fastapi.responses import JSONResponse  # <-- Added import
 from sqlmodel import SQLModel, Session, create_engine, select
 
-from protocol_proxy.bacnet_proxy import BACnetProxy
-from protocol_proxy.ipc import ProtocolProxyMessage
-from protocol_proxy.manager import ProtocolProxyManager
 from . models import Device, Point, Tag, CreateTagRequest, WritePointValueRequest
 
 
@@ -21,15 +18,38 @@ app = FastAPI()
 DATABASE_URL = "sqlite:///./bacnet.db"
 engine = create_engine(DATABASE_URL)
 
-BACNET_PROXY_LOCAL_ADDRESS = "172.18.229.191"
-
 @app.on_event("startup")
 async def on_startup():
     SQLModel.metadata.create_all(engine)
+    # Do not start the proxy here anymore
+    pass
+
+@app.post("/start_proxy")
+async def start_proxy(local_device_address: str = Form(...)):
+    """
+    Start the BACnet proxy with the given local device address (IP).
+    Returns status and address.
+    """
     from protocol_proxy.bacnet_manager import AsyncioBACnetManager
-    app.state.bacnet_manager = AsyncioBACnetManager(BACNET_PROXY_LOCAL_ADDRESS)
-    app.state.bacnet_manager_task = asyncio.create_task(app.state.bacnet_manager.run())
-    await asyncio.sleep(3)  # Give proxy time to start and register
+    try:
+        # If a proxy is already running, stop it first
+        if hasattr(app.state, "bacnet_manager_task") and app.state.bacnet_manager_task:
+            app.state.bacnet_manager_task.cancel()
+            await asyncio.sleep(0.5)
+        app.state.bacnet_manager = AsyncioBACnetManager(local_device_address)
+        app.state.bacnet_manager_task = asyncio.create_task(app.state.bacnet_manager.run())
+        app.state.bacnet_proxy_local_address = local_device_address  # Save the address for later use
+        # Wait a bit for registration
+        await asyncio.sleep(3)
+        # Check registration
+        manager = app.state.bacnet_manager
+        proxy_id = manager.ppm.get_proxy_id((local_device_address, 0))
+        peer = manager.ppm.peers.get(proxy_id)
+        if not peer or not peer.socket_params:
+            return {"status": "error", "error": "Proxy not registered or missing socket_params."}
+        return {"status": "done", "address": local_device_address}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 def get_session():
     with Session(engine) as session:
@@ -41,6 +61,10 @@ async def write_property(device_address: str, object_identifier: str, property_i
     """
     Write a value to a specific property of a device point.
     """
+    from protocol_proxy.manager import ProtocolProxyManager
+    from protocol_proxy.bacnet_proxy import BACnetProxy
+    from protocol_proxy.ipc import ProtocolProxyMessage
+    import json
     ppm = ProtocolProxyManager.get_manager(BACnetProxy)
     message = ProtocolProxyMessage(
         method_name="WRITE_PROPERTY",
@@ -75,13 +99,12 @@ async def read_property(
     print("[read_property] Using global AsyncioBACnetManager from app.state...")
     try:
         manager = app.state.bacnet_manager
-        # Wait for proxy registration
-        proxy_id = manager.ppm.get_proxy_id((BACNET_PROXY_LOCAL_ADDRESS, 0))
+        local_addr = app.state.bacnet_proxy_local_address
+        proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
         peer = manager.ppm.peers.get(proxy_id)
         if not peer or not peer.socket_params:
             print("[read_property] Proxy not registered or missing socket_params!")
             return {"status": "error", "error": "Proxy not registered or missing socket_params, cannot send request."}
-
         payload = {
             'device_address': device_address,
             'object_identifier': object_identifier,
@@ -210,7 +233,8 @@ async def read_device_all(
     Read all standard properties from a BACnet device.
     """
     manager = app.state.bacnet_manager
-    proxy_id = manager.ppm.get_proxy_id((BACNET_PROXY_LOCAL_ADDRESS, 0))
+    local_addr = app.state.bacnet_proxy_local_address
+    proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
     peer = manager.ppm.peers.get(proxy_id)
     if not peer or not peer.socket_params:
         return JSONResponse(content={"status": "error", "error": "Proxy not registered or missing, cannot read device."}, status_code=500)
@@ -248,7 +272,8 @@ async def who_is(
     Send a Who-Is request to a BACnet address or range.
     """
     manager = app.state.bacnet_manager
-    proxy_id = manager.ppm.get_proxy_id((BACNET_PROXY_LOCAL_ADDRESS, 0))
+    local_addr = app.state.bacnet_proxy_local_address
+    proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
     peer = manager.ppm.peers.get(proxy_id)
     if not peer or not peer.socket_params:
         return {"status": "error", "error": "Proxy not registered or missing, cannot send Who-Is."}
