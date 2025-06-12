@@ -4,7 +4,7 @@ import uuid
 from typing import Optional, Any
 
 from fastapi import FastAPI, HTTPException, Depends, Form, Query, Body
-from fastapi.responses import JSONResponse  # <-- Added import
+from fastapi.responses import JSONResponse
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from . models import Device, Point, Tag, CreateTagRequest, WritePointValueRequest
@@ -171,31 +171,32 @@ async def ping_ip(ip_address: str = Form(...)):
             "error": str(e)
         }
 
-# @app.post("/bacnet/scan_ip_range")
-# async def scan_ip_range(network_str: str = Form(...)):
-#     """
-#     Scan a range of IPs for BACnet devices.
-#     """
-#     manager = app.state.bacnet_manager
-#     proxy_id = manager.ppm.get_proxy_id((BACNET_PROXY_LOCAL_ADDRESS, 0))
-#     peer = manager.ppm.peers.get(proxy_id)
-#     if not peer or not peer.socket_params:
-#         return {"status": "error", "error": "Proxy not registered or missing, cannot scan."}
-#     from protocol_proxy.ipc import ProtocolProxyMessage
-#     import json
-#     payload = {"network_str": network_str}
-#     result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
-#         method_name="SCAN_IP_RANGE",
-#         payload=json.dumps(payload).encode('utf8'),
-#         response_expected=True
-#     ))
-#     if asyncio.isfuture(result):
-#         result = await result
-#     try:
-#         value = json.loads(result.decode('utf8'))
-#         return {"status": "done", "devices": value}
-#     except Exception as e:
-#         return {"status": "error", "error": f"Error decoding scan_ip_range response: {e}"}
+@app.post("/bacnet/scan_ip_range")
+async def scan_ip_range(network_str: str = Form(...)):
+    """
+    Scan a range of IPs for BACnet devices using brute-force Who-Is.
+    """
+    manager = app.state.bacnet_manager
+    local_addr = app.state.bacnet_proxy_local_address
+    proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
+    peer = manager.ppm.peers.get(proxy_id)
+    if not peer or not peer.socket_params:
+        return {"status": "error", "error": "Proxy not registered or missing, cannot scan."}
+    from protocol_proxy.ipc import ProtocolProxyMessage
+    import json
+    payload = {"network_str": network_str}
+    result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
+        method_name="SCAN_IP_RANGE",
+        payload=json.dumps(payload).encode('utf8'),
+        response_expected=True
+    ))
+    if asyncio.isfuture(result):
+        result = await result
+    try:
+        value = json.loads(result.decode('utf8'))
+        return {"status": "done", "devices": value}
+    except Exception as e:
+        return {"status": "error", "error": f"Error decoding scan_ip_range response: {e}"}
 
 def make_jsonable(obj):
     """
@@ -301,3 +302,21 @@ async def who_is(
 
 device_points = {}
 point_tags = {}
+
+@app.post("/stop_proxy")
+async def stop_proxy():
+    """
+    Stop the running BACnet proxy and clean up state.
+    """
+    try:
+        if hasattr(app.state, "bacnet_manager_task") and app.state.bacnet_manager_task:
+            app.state.bacnet_manager_task.cancel()
+            await asyncio.sleep(0.5)
+            app.state.bacnet_manager_task = None
+        if hasattr(app.state, "bacnet_manager"):
+            app.state.bacnet_manager = None
+        if hasattr(app.state, "bacnet_proxy_local_address"):
+            app.state.bacnet_proxy_local_address = None
+        return {"status": "done", "message": "BACnet proxy stopped."}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
