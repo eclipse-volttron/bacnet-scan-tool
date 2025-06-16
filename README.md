@@ -37,18 +37,12 @@ Once Poetry is installed, set up the virtual environment and install dependencie
 poetry install
 ```
 
-To activate the virtual environment created by Poetry, use:
-
-```bash
-source $(poetry env info --path)/bin/activate
-```
-
 ## Run
 
 The `bacnet-scan-tool` is a web-based interface tool built using FastAPI. To start the web server, use the following command:
 
 ```bash
-uvicorn bacnet_scan_tool.main:app --reload
+poetry run uvicorn bacnet_scan_tool.main:app --reload
 ```
 
 This will start the server on `http://127.0.0.1:8000`.
@@ -60,7 +54,7 @@ FastAPI provides an interactive Swagger UI for API documentation. Once the serve
 - Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - ReDoc: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
 
-Use these endpoints to explore and test the API.
+Use these endpoints to explore and test the API
 
 ### Example Usage
 
