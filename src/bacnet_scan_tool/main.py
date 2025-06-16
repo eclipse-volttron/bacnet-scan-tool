@@ -7,7 +7,12 @@ from fastapi import FastAPI, HTTPException, Depends, Form, Query, Body
 from fastapi.responses import JSONResponse
 from sqlmodel import SQLModel, Session, create_engine, select
 
-from . models import Device, Point, Tag, CreateTagRequest, WritePointValueRequest
+from protocol_proxy.bacnet_manager import AsyncioBACnetManager
+from protocol_proxy.manager import ProtocolProxyManager
+from protocol_proxy.bacnet_proxy import BACnetProxy
+from protocol_proxy.ipc import ProtocolProxyMessage
+
+from .models import Device, Point, Tag, CreateTagRequest, WritePointValueRequest
 
 
 
@@ -30,7 +35,6 @@ async def start_proxy(local_device_address: str = Form(...)):
     Start the BACnet proxy with the given local device address (IP).
     Returns status and address.
     """
-    from protocol_proxy.bacnet_manager import AsyncioBACnetManager
     try:
         # If a proxy is already running, stop it first
         if hasattr(app.state, "bacnet_manager_task") and app.state.bacnet_manager_task:
@@ -61,10 +65,6 @@ async def write_property(device_address: str, object_identifier: str, property_i
     """
     Write a value to a specific property of a device point.
     """
-    from protocol_proxy.manager import ProtocolProxyManager
-    from protocol_proxy.bacnet_proxy import BACnetProxy
-    from protocol_proxy.ipc import ProtocolProxyMessage
-    import json
     ppm = ProtocolProxyManager.get_manager(BACnetProxy)
     message = ProtocolProxyMessage(
         method_name="WRITE_PROPERTY",
@@ -94,8 +94,6 @@ async def read_property(
     """
     Perform a BACnet property read and return the result directly (waits for completion).
     """
-    from protocol_proxy.ipc import ProtocolProxyMessage
-    import json
     print("[read_property] Using global AsyncioBACnetManager from app.state...")
     try:
         manager = app.state.bacnet_manager
