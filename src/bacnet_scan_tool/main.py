@@ -2,10 +2,12 @@ import asyncio
 import json
 import uuid
 from typing import Optional, Any
+import socket
 
-from fastapi import FastAPI, HTTPException, Depends, Form, Query, Body
+from fastapi import FastAPI, HTTPException, Depends, Form, Query
 from fastapi.responses import JSONResponse
 from sqlmodel import SQLModel, Session, create_engine, select
+from pydantic import BaseModel
 
 from protocol_proxy.bacnet_manager import AsyncioBACnetManager
 from protocol_proxy.manager import ProtocolProxyManager
@@ -318,3 +320,14 @@ async def stop_proxy():
         return {"status": "done", "message": "BACnet proxy stopped."}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+@app.get("/get_local_ip")
+def get_local_ip(target_ip: str = Query(..., description="Target IP address")):
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect((target_ip, 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return {"local_ip": local_ip}
+    except Exception:
+        return {"local_ip": "127.0.0.1"}
