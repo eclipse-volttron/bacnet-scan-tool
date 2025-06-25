@@ -31,6 +31,51 @@ async def on_startup():
     # Do not start the proxy here anymore
     pass
 
+@app.get("/get_local_ip")
+def get_local_ip(
+    target_ip: Optional[str] = Query(
+        None,
+        description="Optional. If provided, returns the local IP/interface that would be used to reach this target IP (useful for multi-homed systems). If not provided, defaults to 8.8.8.8 (internet route)."
+    )
+):
+    """
+    Returns the local IP, subnet mask, and CIDR notation for the interface used to reach the target IP.
+    If no target_ip is provided, defaults to 8.8.8.8 to determine the main outbound interface.
+    """
+    try:
+        # Use 8.8.8.8 as the default target if not provided
+        effective_target = target_ip if target_ip else "8.8.8.8"
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect((effective_target, 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        # Now, get subnet mask and CIDR
+        try:
+            import netifaces
+            iface_name = None
+            subnet_mask = None
+            for iface in netifaces.interfaces():
+                addrs = netifaces.ifaddresses(iface)
+                if netifaces.AF_INET in addrs:
+                    for addr in addrs[netifaces.AF_INET]:
+                        if addr.get('addr') == local_ip:
+                            iface_name = iface
+                            subnet_mask = addr.get('netmask')
+                            break
+                if iface_name:
+                    break
+            if iface_name and subnet_mask:
+                import ipaddress
+                net = ipaddress.IPv4Network(f"{local_ip}/{subnet_mask}", strict=False)
+                cidr = f"{local_ip}/{net.prefixlen}"
+                return {"local_ip": local_ip, "subnet_mask": subnet_mask, "cidr": cidr}
+            else:
+                return {"local_ip": local_ip, "error": "Could not determine subnet mask for this interface."}
+        except ImportError:
+            return {"local_ip": local_ip, "error": "netifaces package not installed. Install with 'pip install netifaces' to get subnet mask and CIDR."}
+    except Exception:
+        return {"local_ip": "127.0.0.1", "error": "Could not determine local IP."}
+
 @app.post("/start_proxy")
 async def start_proxy(local_device_address: str = Form(...)):
     """
@@ -56,6 +101,96 @@ async def start_proxy(local_device_address: str = Form(...)):
         return {"status": "done", "address": local_device_address}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+    
+@app.get("/get_windows_host_ip")
+def get_windows_host_ip():
+    """
+    Returns the first non-loopback IPv4 address from the Windows host (for WSL2 environments).
+    """
+    import subprocess
+    import re
+    try:
+        output = subprocess.check_output(["ipconfig.exe"], encoding="utf-8", errors="ignore")
+        ips = re.findall(r"IPv4 Address[. ]*: ([0-9.]+)", output)
+        for ip in ips:
+            if not (ip.startswith("127.") or ip.startswith("172.") or ip.startswith("192.168.56.")):
+                return {"windows_host_ip": ip}
+        if ips:
+            return {"windows_host_ip": ips[0]}
+        return {"error": "Could not determine Windows host IPv4 address."}
+    except Exception:
+        return {"error": "Could not determine Windows host IPv4 address."}
+    
+@app.post("/bacnet/scan_ip_range")
+async def scan_ip_range(network_str: str = Form(...)):
+    """
+    Scan a range of IPs for BACnet devices using brute-force Who-Is.
+    Ensures each device result includes 'device_instance' (int), 'object-name', and a string 'deviceIdentifier'.
+    """
+    manager = app.state.bacnet_manager
+    local_addr = app.state.bacnet_proxy_local_address
+    proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
+    peer = manager.ppm.peers.get(proxy_id)
+    if not peer or not peer.socket_params:
+        return {"status": "error", "error": "Proxy not registered or missing, cannot scan."}
+    from protocol_proxy.ipc import ProtocolProxyMessage
+    import json
+    payload = {"network_str": network_str}
+    result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
+        method_name="SCAN_IP_RANGE",
+        payload=json.dumps(payload).encode('utf8'),
+        response_expected=True
+    ))
+    if asyncio.isfuture(result):
+        result = await result
+    try:
+        value = json.loads(result.decode('utf8'))
+        # Post-process to ensure device_instance and string deviceIdentifier
+        processed = []
+        for dev in value:
+            dev_out = dict(dev)
+            # device_instance
+            if 'device_instance' not in dev_out:
+                # Try to extract from deviceIdentifier
+                did = dev_out.get('deviceIdentifier')
+                if isinstance(did, (list, tuple)) and len(did) == 2:
+                    dev_out['device_instance'] = did[1]
+            # deviceIdentifier as string
+            if 'deviceIdentifier' in dev_out:
+                did = dev_out['deviceIdentifier']
+                if isinstance(did, (list, tuple)):
+                    dev_out['deviceIdentifier'] = f"{did[0]},{did[1]}"
+            processed.append(dev_out)
+        return {"status": "done", "devices": processed}
+    except Exception as e:
+        return {"status": "error", "error": f"Error decoding scan_ip_range response: {e}"}
+
+def make_jsonable(obj):
+    """
+    Recursively convert BACnet objects, enums, and tuples to JSON-serializable types.
+    """
+    import ipaddress
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, bytes):
+        return obj.decode('utf-8', errors='replace')
+    if isinstance(obj, bytearray):
+        return bytes(obj).decode('utf-8', errors='replace')
+    if isinstance(obj, dict):
+        return {make_jsonable(k): make_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, set, tuple)):
+        return [make_jsonable(x) for x in obj]
+    if hasattr(obj, 'name') and hasattr(obj, 'value'):
+        # Likely an enum
+        return str(obj.name)
+    if hasattr(obj, '__class__') and obj.__class__.__name__.startswith('ObjectType'):
+        return str(obj)
+    if isinstance(obj, ipaddress.IPv4Address) or isinstance(obj, ipaddress.IPv6Address):
+        return str(obj)
+    # Fallback to string
+    return str(obj)
 
 def get_session():
     with Session(engine) as session:
@@ -135,113 +270,6 @@ async def read_property(
         print(f"[read_property] Exception: {e}")
         return {"status": "error", "error": str(e)}
 
-@app.post("/ping_ip")
-async def ping_ip(ip_address: str = Form(...)):
-    """
-    Ping the given IP address and return the result. Waits for a response, shows loading in UI until done.
-    """
-    # Use the system ping command for cross-platform compatibility
-    # -c 1: send 1 packet (Linux/macOS), -W 2: 2 second timeout
-    # For Windows, use '-n 1' and '-w 2000' (ms)
-    import platform
-    import asyncio
-    system = platform.system()
-    if system == "Windows":
-        cmd = ["ping", "-n", "1", "-w", "2000", ip_address]
-    else:
-        cmd = ["ping", "-c", "1", "-W", "2", ip_address]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await proc.communicate()
-        success = proc.returncode == 0
-        result = stdout.decode() if stdout else stderr.decode()
-        return {
-            "ip_address": ip_address,
-            "success": success,
-            "output": result.strip()
-        }
-    except Exception as e:
-        return {
-            "ip_address": ip_address,
-            "success": False,
-            "error": str(e)
-        }
-
-@app.post("/bacnet/scan_ip_range")
-async def scan_ip_range(network_str: str = Form(...)):
-    """
-    Scan a range of IPs for BACnet devices using brute-force Who-Is.
-    Ensures each device result includes 'device_instance' (int), 'object-name', and a string 'deviceIdentifier'.
-    """
-    manager = app.state.bacnet_manager
-    local_addr = app.state.bacnet_proxy_local_address
-    proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
-    peer = manager.ppm.peers.get(proxy_id)
-    if not peer or not peer.socket_params:
-        return {"status": "error", "error": "Proxy not registered or missing, cannot scan."}
-    from protocol_proxy.ipc import ProtocolProxyMessage
-    import json
-    payload = {"network_str": network_str}
-    result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
-        method_name="SCAN_IP_RANGE",
-        payload=json.dumps(payload).encode('utf8'),
-        response_expected=True
-    ))
-    if asyncio.isfuture(result):
-        result = await result
-    try:
-        value = json.loads(result.decode('utf8'))
-        # Post-process to ensure device_instance and string deviceIdentifier
-        processed = []
-        for dev in value:
-            dev_out = dict(dev)
-            # device_instance
-            if 'device_instance' not in dev_out:
-                # Try to extract from deviceIdentifier
-                did = dev_out.get('deviceIdentifier')
-                if isinstance(did, (list, tuple)) and len(did) == 2:
-                    dev_out['device_instance'] = did[1]
-            # deviceIdentifier as string
-            if 'deviceIdentifier' in dev_out:
-                did = dev_out['deviceIdentifier']
-                if isinstance(did, (list, tuple)):
-                    dev_out['deviceIdentifier'] = f"{did[0]},{did[1]}"
-            processed.append(dev_out)
-        return {"status": "done", "devices": processed}
-    except Exception as e:
-        return {"status": "error", "error": f"Error decoding scan_ip_range response: {e}"}
-
-def make_jsonable(obj):
-    """
-    Recursively convert BACnet objects, enums, and tuples to JSON-serializable types.
-    """
-    import ipaddress
-    if obj is None:
-        return None
-    if isinstance(obj, (str, int, float, bool)):
-        return obj
-    if isinstance(obj, bytes):
-        return obj.decode('utf-8', errors='replace')
-    if isinstance(obj, bytearray):
-        return bytes(obj).decode('utf-8', errors='replace')
-    if isinstance(obj, dict):
-        return {make_jsonable(k): make_jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, set, tuple)):
-        return [make_jsonable(x) for x in obj]
-    if hasattr(obj, 'name') and hasattr(obj, 'value'):
-        # Likely an enum
-        return str(obj.name)
-    if hasattr(obj, '__class__') and obj.__class__.__name__.startswith('ObjectType'):
-        return str(obj)
-    if isinstance(obj, ipaddress.IPv4Address) or isinstance(obj, ipaddress.IPv6Address):
-        return str(obj)
-    # Fallback to string
-    return str(obj)
-
 @app.post("/bacnet/read_device_all")
 async def read_device_all(
     device_address: str = Form(...),
@@ -278,8 +306,6 @@ async def read_device_all(
     except Exception as e:
         print(f"[read_device_all] Error decoding or serializing response: {e}")
         return JSONResponse(content={"status": "error", "error": f"Error decoding read_device_all response: {e}"}, status_code=500)
-    
-
 
 #TODO create callbacks
 @app.post("/bacnet/who_is")
@@ -317,60 +343,45 @@ async def who_is(
     except Exception as e:
         return {"status": "error", "error": f"Error decoding who_is response: {e}"}
 # Temporary stubs to avoid NameError in endpoints
-# TODO: Replace with real device/point discovery logic
 
 device_points = {}
 point_tags = {}
 
-
-# TODO having problems with this endpoint, it is not working as expected
-# @app.post("/bacnet/who_is_router_to_network_targeted")
-# async def whois_router_to_network_targeted(
-#     my_ip: str = Form(..., description="Local interface with subnet mask, e.g. '192.168.1.10/24'"),
-#     target_ip: str = Form(..., description="The device you want to scan (IP address)"),
-#     bbmd_ip: str = Form(None, description="Remote BBMD (if needed), e.g. '130.20.24.157:47808'"),
-#     bbmd_ttl: int = Form(900, description="BBMD TTL (default 900)")
-# ):
-#     """
-#     Mimics the script logic: Who-Is to a target device, then Who-Is-Router-To-Network if found.
-#     Returns found devices and routing table.
-#     """
-#     import BAC0
-#     bacnet = None
-#     try:
-#         # Start BAC0 with local IP and optional BBMD
-#         if bbmd_ip:
-#             bacnet = BAC0.lite(ip=my_ip, bbmdAddress=bbmd_ip, bbmdTTL=bbmd_ttl)
-#         else:
-#             bacnet = BAC0.lite(ip=my_ip)
-#         await asyncio.sleep(1)
-#         # Send Who-Is to the target device
-#         devices = await bacnet.who_is(address=target_ip)
-#         found_devices = []
-#         if devices:
-#             for device in devices:
-#                 device_id = device.iAmDeviceIdentifier[1]
-#                 found_devices.append({
-#                     "device_id": device_id,
-#                     "address": str(device.address),
-#                     "max_apdu_length": getattr(device, 'maxAPDULengthAccepted', None),
-#                     "segmentation_supported": str(getattr(device, 'segmentationSupported', None)),
-#                 })
-#             # Try router discovery
-#             await bacnet.whois_router_to_network(0)
-#             routing_table = getattr(bacnet, 'routing_table', None)
-#             return {"status": "done", "devices": found_devices, "routing_table": routing_table}
-#         else:
-#             return {"status": "done", "devices": [], "routing_table": None, "message": f"No BACnet devices found at {target_ip}."}
-#     except Exception as e:
-#         return {"status": "error", "error": str(e)}
-#     finally:
-#         if bacnet is not None:
-#             try:
-#                 bacnet.close()
-#                 await asyncio.sleep(1)
-#             except Exception:
-#                 pass
+@app.post("/ping_ip")
+async def ping_ip(ip_address: str = Form(...)):
+    """
+    Ping the given IP address and return the result. Waits for a response, shows loading in UI until done.
+    """
+    # Use the system ping command for cross-platform compatibility
+    # -c 1: send 1 packet (Linux/macOS), -W 2: 2 second timeout
+    # For Windows, use '-n 1' and '-w 2000' (ms)
+    import platform
+    import asyncio
+    system = platform.system()
+    if system == "Windows":
+        cmd = ["ping", "-n", "1", "-w", "2000", ip_address]
+    else:
+        cmd = ["ping", "-c", "1", "-W", "2", ip_address]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        success = proc.returncode == 0
+        result = stdout.decode() if stdout else stderr.decode()
+        return {
+            "ip_address": ip_address,
+            "success": success,
+            "output": result.strip()
+        }
+    except Exception as e:
+        return {
+            "ip_address": ip_address,
+            "success": False,
+            "error": str(e)
+        }
 
 @app.post("/stop_proxy")
 async def stop_proxy():
@@ -389,67 +400,3 @@ async def stop_proxy():
         return {"status": "done", "message": "BACnet proxy stopped."}
     except Exception as e:
         return {"status": "error", "error": str(e)}
-
-@app.get("/get_local_ip")
-def get_local_ip(
-    target_ip: Optional[str] = Query(
-        None,
-        description="Optional. If provided, returns the local IP/interface that would be used to reach this target IP (useful for multi-homed systems). If not provided, defaults to 8.8.8.8 (internet route)."
-    )
-):
-    """
-    Returns the local IP, subnet mask, and CIDR notation for the interface used to reach the target IP.
-    If no target_ip is provided, defaults to 8.8.8.8 to determine the main outbound interface.
-    """
-    try:
-        # Use 8.8.8.8 as the default target if not provided
-        effective_target = target_ip if target_ip else "8.8.8.8"
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect((effective_target, 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-        # Now, get subnet mask and CIDR
-        try:
-            import netifaces
-            iface_name = None
-            subnet_mask = None
-            for iface in netifaces.interfaces():
-                addrs = netifaces.ifaddresses(iface)
-                if netifaces.AF_INET in addrs:
-                    for addr in addrs[netifaces.AF_INET]:
-                        if addr.get('addr') == local_ip:
-                            iface_name = iface
-                            subnet_mask = addr.get('netmask')
-                            break
-                if iface_name:
-                    break
-            if iface_name and subnet_mask:
-                import ipaddress
-                net = ipaddress.IPv4Network(f"{local_ip}/{subnet_mask}", strict=False)
-                cidr = f"{local_ip}/{net.prefixlen}"
-                return {"local_ip": local_ip, "subnet_mask": subnet_mask, "cidr": cidr}
-            else:
-                return {"local_ip": local_ip, "error": "Could not determine subnet mask for this interface."}
-        except ImportError:
-            return {"local_ip": local_ip, "error": "netifaces package not installed. Install with 'pip install netifaces' to get subnet mask and CIDR."}
-    except Exception:
-        return {"local_ip": "127.0.0.1", "error": "Could not determine local IP."}
-
-@app.get("/get_windows_host_ip")
-def get_windows_host_ip():
-    """
-    Returns the first non-loopback IPv4 address from the Windows host (for WSL2 environments).
-    """
-    import subprocess
-    import re
-    try:
-        output = subprocess.check_output(["ipconfig.exe"], encoding="utf-8", errors="ignore")
-        ips = re.findall(r"IPv4 Address[. ]*: ([0-9.]+)", output)
-        for ip in ips:
-            if not (ip.startswith("127.") or ip.startswith("172.") or ip.startswith("192.168.56.")):
-                return {"windows_host_ip": ip}
-        if ips:
-            return {"windows_host_ip": ips[0]}
-        return {"error": "Could not determine Windows host IPv4 address."}
-    except Exception:
-        return {"error": "Could not determine Windows host IPv4 address."}
