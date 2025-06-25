@@ -482,18 +482,28 @@ async def stop_proxy():
         return {"status": "error", "error": str(e)}
 
 @app.get("/get_local_ip")
-def get_local_ip(target_ip: str = Query(..., description="Target IP address")):
+def get_local_ip(
+    target_ip: Optional[str] = Query(
+        None,
+        description="Optional. If provided, returns the local IP/interface that would be used to reach this target IP (useful for multi-homed systems). If not provided, defaults to 8.8.8.8 (internet route)."
+    )
+):
     """
     Returns the local IP, subnet mask, and CIDR notation for the interface used to reach the target IP.
+    If no target_ip is provided, defaults to 8.8.8.8 to determine the main outbound interface.
     """
     try:
+        # Use 8.8.8.8 as the default target if not provided
+        effective_target = target_ip if target_ip else "8.8.8.8"
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect((target_ip, 80))
+        s.connect((effective_target, 80))
         local_ip = s.getsockname()[0]
         s.close()
+        # Now, get subnet mask and CIDR
         try:
             import netifaces
             iface_name = None
+            subnet_mask = None
             for iface in netifaces.interfaces():
                 addrs = netifaces.ifaddresses(iface)
                 if netifaces.AF_INET in addrs:
@@ -505,7 +515,6 @@ def get_local_ip(target_ip: str = Query(..., description="Target IP address")):
                 if iface_name:
                     break
             if iface_name and subnet_mask:
-                # Calculate CIDR
                 import ipaddress
                 net = ipaddress.IPv4Network(f"{local_ip}/{subnet_mask}", strict=False)
                 cidr = f"{local_ip}/{net.prefixlen}"
