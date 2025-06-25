@@ -19,7 +19,6 @@ from .models import Device, Point, Tag, CreateTagRequest, WritePointValueRequest
 
 
 # TODO handle who is AND just one device.
-# TODO return device / object identifier in scan ip range
 app = FastAPI()
 
 # SQLite database setup
@@ -280,97 +279,7 @@ async def read_device_all(
         print(f"[read_device_all] Error decoding or serializing response: {e}")
         return JSONResponse(content={"status": "error", "error": f"Error decoding read_device_all response: {e}"}, status_code=500)
     
-@app.post("/bacnet/one_click_discovery")
-async def one_click_discovery():
-    """
-    Perform a one-click discovery of BACnet devices:
-    - Selects the best local interface (non-loopback, with subnet mask)
-    - Starts the BACnet proxy with that interface
-    - Gets the Windows host IP (for WSL2)
-    - Runs scan_ip_range on that IP's /20 subnet (TODO: make subnet detection smarter)
-    - Returns the selected IP, subnet, proxy status, and scan results
-    """
-    import netifaces
-    import ipaddress
-    import subprocess
-    import re
-    # Step 1: Find the best local interface
-    selected_ip = None
-    selected_mask = None
-    for iface in netifaces.interfaces():
-        addrs = netifaces.ifaddresses(iface)
-        if netifaces.AF_INET in addrs:
-            for addr in addrs[netifaces.AF_INET]:
-                ip = addr.get('addr')
-                mask = addr.get('netmask')
-                if ip and mask and not ip.startswith('127.'):
-                    selected_ip = ip
-                    selected_mask = mask
-                    break
-        if selected_ip:
-            break
-    if not selected_ip or not selected_mask:
-        return {"status": "error", "error": "No suitable local interface found."}
-    # Step 2: Calculate CIDR
-    net = ipaddress.IPv4Network(f"{selected_ip}/{selected_mask}", strict=False)
-    cidr = f"{selected_ip}/{net.prefixlen}"
-    # Step 3: Start the proxy with this IP
-    try:
-        if hasattr(app.state, "bacnet_manager_task") and app.state.bacnet_manager_task:
-            app.state.bacnet_manager_task.cancel()
-            await asyncio.sleep(0.5)
-        app.state.bacnet_manager = AsyncioBACnetManager(selected_ip)
-        app.state.bacnet_manager_task = asyncio.create_task(app.state.bacnet_manager.run())
-        app.state.bacnet_proxy_local_address = selected_ip
-        await asyncio.sleep(3)
-        manager = app.state.bacnet_manager
-        proxy_id = manager.ppm.get_proxy_id((selected_ip, 0))
-        peer = manager.ppm.peers.get(proxy_id)
-        if not peer or not peer.socket_params:
-            return {"status": "error", "error": "Proxy not registered or missing socket_params."}
-        # Step 4: Get Windows host IP (for WSL2)
-        try:
-            output = subprocess.check_output(["ipconfig.exe"], encoding="utf-8", errors="ignore")
-            # Find all IPv4 addresses and subnet masks
-            ip_matches = list(re.finditer(r"IPv4 Address[. ]*: ([0-9.]+)", output))
-            mask_matches = list(re.finditer(r"Subnet Mask[. ]*: ([0-9.]+)", output))
-            windows_ip = None
-            windows_mask = None
-            # Try to pair IPs and masks by order
-            for idx, ip_match in enumerate(ip_matches):
-                ip = ip_match.group(1)
-                if not (ip.startswith("127.") or ip.startswith("172.") or ip.startswith("192.168.56.")):
-                    windows_ip = ip
-                    # Try to get the corresponding mask
-                    if idx < len(mask_matches):
-                        windows_mask = mask_matches[idx].group(1)
-                    break
-            if not windows_ip and ip_matches:
-                windows_ip = ip_matches[0].group(1)
-                if mask_matches:
-                    windows_mask = mask_matches[0].group(1)
-        except Exception:
-            windows_ip = None
-            windows_mask = None
-        # Step 5: Run scan_ip_range on Windows IP's /20 subnet (use correct mask if available)
-        scan_result = None
-        scan_cidr = None  # Ensure scan_cidr is always defined
-        if windows_ip:
-            # TODO: Make subnet detection smarter than /20
-            base = ".".join(windows_ip.split(".")[:3])
-            scan_cidr = f"{base}.0/20"
-            scan_result = await scan_ip_range(network_str=scan_cidr)
-        return {
-            "status": "done",
-            "local_ip": selected_ip,
-            "subnet_mask": selected_mask,
-            "cidr": cidr,
-            "windows_host_ip": windows_ip,
-            "scan_range": scan_cidr if windows_ip else None,
-            "scan_result": scan_result
-        }
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+
 
 #TODO create callbacks
 @app.post("/bacnet/who_is")
