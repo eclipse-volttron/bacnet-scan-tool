@@ -77,12 +77,21 @@ def get_local_ip(
         return {"local_ip": "127.0.0.1", "error": "Could not determine local IP."}
 
 @app.post("/start_proxy")
-async def start_proxy(local_device_address: str = Form(...)):
+async def start_proxy(local_device_address: Optional[str] = Form(None)):
     """
-    Start the BACnet proxy with the given local device address (IP).
+    Start the BACnet proxy with the given local device address (IP), or auto-detect if not provided.
     Returns status and address.
     """
     try:
+        # If no address provided, auto-detect using get_local_ip logic
+        if not local_device_address:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                local_device_address = s.getsockname()[0]
+                s.close()
+            except Exception:
+                return {"status": "error", "error": "Could not auto-detect local IP address. Please specify manually."}
         # If a proxy is already running, stop it first
         if hasattr(app.state, "bacnet_manager_task") and app.state.bacnet_manager_task:
             app.state.bacnet_manager_task.cancel()
