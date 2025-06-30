@@ -59,29 +59,6 @@ Once Poetry is installed, set up the virtual environment and install dependencie
 poetry install
 ```
 
-## Development
-
-### Pre-commit Hooks
-
-This project uses pre-commit hooks to ensure code quality. To set up pre-commit:
-
-```bash
-# Install pre-commit hooks
-pre-commit install
-
-# Run on all files (optional, but recommended on first setup)
-pre-commit run --all-files
-```
-
-The pre-commit hooks will automatically run on each commit and include:
-- Code formatting (Black, isort)
-- Linting (flake8, pylint)
-- Security checks (bandit)
-- General file checks (trailing whitespace, file endings, etc.)
-- Markdown formatting
-
-
-
 ## Usage
 
 ### Start the FastAPI Web Server
@@ -107,7 +84,7 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
      - Advanced: Provide `local_device_address` to bind to a specific local IP/interface.
      - **Returns:**
        ```json
-       { "status": "done", "address": "172.18.229.191" }
+       { "status": "done", "address": "192.168.1.100" }
        ```
        On error:
        ```json
@@ -119,7 +96,7 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
      - Returns the local IP, subnet mask, and CIDR for the interface used to reach a target IP (default is 8.8.8.8).
      - **Returns:**
        ```json
-       { "local_ip": "172.18.229.191", "subnet_mask": "255.255.240.0", "cidr": "172.18.229.191/20" }
+       { "local_ip": "192.168.1.100", "subnet_mask": "255.255.255.0", "cidr": "192.168.1.100/24" }
        ```
        On error:
        ```json
@@ -131,7 +108,7 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
      - Returns the first non-loopback IPv4 address from the Windows host (helpful for WSL2 environments).
      - **Returns:**
        ```json
-       { "windows_host_ip": "130.20.125.77" }
+       { "windows_host_ip": "192.168.1.50" }
        ```
      - **Tip:** Use this if you know your BACnet device is on the same network as your Windows host. You can use the returned IP to determine the correct subnet for scanning.
 
@@ -145,24 +122,24 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
          "status": "done",
          "devices": [
            {
-             "pduSource": "130.20.24.157",
-             "deviceIdentifier": "8,506892",
-             "maxAPDULengthAccepted": 1024,
-             "segmentationSupported": "segmented-both",
-             "vendorID": 5,
-             "object-name": "3820a",
-             "scanned_ip_target": "130.20.24.157",
-             "device_instance": 506892
-           },
-           {
-             "pduSource": "130.20.24.158",
+             "pduSource": "192.168.1.101",
              "deviceIdentifier": "8,123456",
              "maxAPDULengthAccepted": 1024,
              "segmentationSupported": "segmented-both",
              "vendorID": 5,
-             "object-name": "3820b",
-             "scanned_ip_target": "130.20.24.158",
+             "object-name": "Device-A",
+             "scanned_ip_target": "192.168.1.101",
              "device_instance": 123456
+           },
+           {
+             "pduSource": "192.168.1.102",
+             "deviceIdentifier": "8,789012",
+             "maxAPDULengthAccepted": 1024,
+             "segmentationSupported": "segmented-both",
+             "vendorID": 5,
+             "object-name": "Device-B",
+             "scanned_ip_target": "192.168.1.102",
+             "device_instance": 789012
            }
          ]
        }
