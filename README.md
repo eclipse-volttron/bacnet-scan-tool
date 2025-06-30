@@ -59,6 +59,27 @@ Once Poetry is installed, set up the virtual environment and install dependencie
 poetry install
 ```
 
+## Development
+
+### Pre-commit Hooks
+
+This project uses pre-commit hooks to ensure code quality. To set up pre-commit:
+
+```bash
+# Install pre-commit hooks
+pre-commit install
+
+# Run on all files (optional, but recommended on first setup)
+pre-commit run --all-files
+```
+
+The pre-commit hooks will automatically run on each commit and include:
+- Code formatting (Black, isort)
+- Linting (flake8, pylint)
+- Security checks (bandit)
+- General file checks (trailing whitespace, file endings, etc.)
+- Markdown formatting
+
 
 
 ## Usage
