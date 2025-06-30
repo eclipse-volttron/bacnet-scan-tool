@@ -154,6 +154,11 @@ async def scan_ip_range(network_str: str = Form(...)):
         result = await result
     try:
         value = json.loads(result.decode('utf8'))
+        
+        # Check if this is a timeout error response
+        if isinstance(value, dict) and value.get('status') == 'error' and 'timed out' in value.get('error', ''):
+            return {"status": "error", "error": f"Scan operation timed out: {value.get('error', 'Unknown timeout error')}"}
+        
         # Post-process to ensure device_instance and string deviceIdentifier
         processed = []
         for dev in value:
@@ -171,8 +176,14 @@ async def scan_ip_range(network_str: str = Form(...)):
                     dev_out['deviceIdentifier'] = f"{did[0]},{did[1]}"
             processed.append(dev_out)
         return {"status": "done", "devices": processed}
+    except json.JSONDecodeError as e:
+        # Check if the result is empty or contains the old 'FOO' placeholder
+        result_str = result.decode('utf8', errors='replace') if isinstance(result, bytes) else str(result)
+        if not result_str or result_str.strip() == 'FOO':
+            return {"status": "error", "error": "Scan operation timed out - no response received from BACnet proxy"}
+        return {"status": "error", "error": f"Error decoding scan_ip_range response: {e}. Raw response: {result_str[:200]}"}
     except Exception as e:
-        return {"status": "error", "error": f"Error decoding scan_ip_range response: {e}"}
+        return {"status": "error", "error": f"Error processing scan_ip_range response: {e}"}
 
 def make_jsonable(obj):
     """
