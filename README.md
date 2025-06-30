@@ -243,7 +243,7 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
   - **Description:** Returns the local IP address your machine would use to reach a given BACnet device or network.
   - **Query Parameter:**
     - `target_ip`: The IP address of the BACnet device or network you want to reach.
-  - **Returns:** Local IP address.
+  - **Returns:** Local IP address
 
 You can also use the interactive API documentation:
 - Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
