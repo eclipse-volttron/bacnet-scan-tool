@@ -1,5 +1,27 @@
 # BACnet Scan Tool API
 
+## About
+
+The BACnet Scan Tool is a FastAPI-based web service that provides a comprehensive interface for discovering, communicating with, and managing BACnet devices on your network. This tool acts as a bridge between web applications and BACnet networks, offering both REST API endpoints and an interactive web interface for BACnet operations.
+
+### Key Features
+
+- **Device Discovery**: Scan IP ranges to automatically discover BACnet devices using Who-Is requests
+- **Property Operations**: Read and write BACnet device properties with full support for array indices and priority levels
+- **Network Intelligence**: Automatically detect local network interfaces and provide guidance for optimal scanning
+- **Cross-Platform Support**: Works on Linux, Windows, and WSL2 environments with automatic network configuration
+- **Interactive API**: Built-in Swagger UI for easy testing and exploration of all endpoints
+
+### Use Cases
+
+- **Building Automation Integration**: Connect web applications to BACnet building systems
+- **Network Commissioning**: Discover and verify BACnet devices during installation
+- **System Monitoring**: Read device properties for monitoring and reporting applications
+- **Device Configuration**: Write properties to configure BACnet devices remotely
+- **Network Troubleshooting**: Identify and diagnose BACnet communication issues
+
+This tool is particularly useful for developers building web-based building automation systems, facility managers needing to monitor BACnet networks, and system integrators working with BACnet devices.
+
 ## Build
 
 To build the `bacnet-scan-tool`, ensure you have Python 3.10 or higher installed, then run the following commands:
