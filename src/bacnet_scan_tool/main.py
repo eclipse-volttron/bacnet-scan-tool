@@ -279,6 +279,7 @@ async def read_property(
         print(f"[read_property] Exception: {e}")
         return {"status": "error", "error": str(e)}
 
+# TODO add object cache
 @app.post("/bacnet/read_device_all")
 async def read_device_all(
     device_address: str = Form(...),
