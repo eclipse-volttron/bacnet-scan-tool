@@ -139,14 +139,24 @@ async def start_proxy(local_device_address: Optional[str] = Form(None)):
         return {"status": "error", "error": str(e)}
 
 
-@app.get("/get_windows_host_ip")
-def get_windows_host_ip():
+@app.get("/get_host_ip")
+def get_host_ip():
     """
-    Returns the first non-loopback IPv4 address from the Windows host (for WSL2 environments).
+    Returns the first non-loopback IPv4 address. Works on both WSL and native Linux systems.
+    For WSL: attempts to get Windows host IP via ipconfig.exe
+    For native Linux: returns the primary network interface IP
     """
     import subprocess
     import re
+    import os
+    import platform
+    
+    # First, try WSL method (ipconfig.exe)
     try:
+        # Check if we're in WSL by looking for ipconfig.exe availability
+        subprocess.check_output(["which", "ipconfig.exe"], 
+                               stderr=subprocess.DEVNULL)
+        # We're in WSL, use the original method
         output = subprocess.check_output(["ipconfig.exe"],
                                          encoding="utf-8",
                                          errors="ignore")
@@ -157,9 +167,74 @@ def get_windows_host_ip():
                 return {"windows_host_ip": ip}
         if ips:
             return {"windows_host_ip": ips[0]}
-        return {"error": "Could not determine Windows host IPv4 address."}
-    except Exception:
-        return {"error": "Could not determine Windows host IPv4 address."}
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Not in WSL or ipconfig.exe not available, try Linux methods
+        pass
+    
+    # Native Linux method - try multiple approaches
+    try:
+        # Method 1: Use ip route to find default gateway interface IP
+        try:
+            # Get the default route interface
+            route_output = subprocess.check_output(
+                ["ip", "route", "show", "default"], 
+                encoding="utf-8"
+            )
+            # Extract interface name from default route
+            import re
+            match = re.search(r'dev\s+(\S+)', route_output)
+            if match:
+                interface = match.group(1)
+                # Get IP of that interface
+                addr_output = subprocess.check_output(
+                    ["ip", "addr", "show", interface],
+                    encoding="utf-8"
+                )
+                ip_match = re.search(r'inet\s+([0-9.]+)', addr_output)
+                if ip_match:
+                    ip = ip_match.group(1)
+                    if not ip.startswith("127."):
+                        return {"windows_host_ip": ip}
+        except (subprocess.CalledProcessError, AttributeError):
+            pass
+
+        # Method 2: Use hostname -I as fallback
+        try:
+            output = subprocess.check_output(["hostname", "-I"], 
+                                           encoding="utf-8")
+            ips = output.strip().split()
+            for ip in ips:
+                if not (ip.startswith("127.") or ip.startswith("172.")
+                        or ip.startswith("192.168.56.")):
+                    return {"windows_host_ip": ip}
+            if ips:
+                return {"windows_host_ip": ips[0]}
+        except subprocess.CalledProcessError:
+            pass
+        
+        # Method 3: Parse /proc/net/route as last resort
+        try:
+            with open('/proc/net/route', 'r') as f:
+                for line in f:
+                    fields = line.strip().split()
+                    if len(fields) >= 2 and fields[1] == '00000000':  # Default route
+                        interface = fields[0]
+                        # Get IP for this interface
+                        addr_output = subprocess.check_output(
+                            ["ip", "addr", "show", interface],
+                            encoding="utf-8"
+                        )
+                        ip_match = re.search(r'inet\s+([0-9.]+)', addr_output)
+                        if ip_match:
+                            ip = ip_match.group(1)
+                            if not ip.startswith("127."):
+                                return {"windows_host_ip": ip}
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pass
+        
+        return {"error": "Could not determine host IPv4 address on this system."}
+    except Exception as e:
+        return {"error": f"Could not determine host IPv4 address: {str(e)}"}
 
 
 @app.post("/bacnet/scan_ip_range")
