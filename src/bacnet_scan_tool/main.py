@@ -14,9 +14,10 @@ from protocol_proxy.manager import ProtocolProxyManager
 from protocol_proxy.bacnet_proxy import BACnetProxy
 from protocol_proxy.ipc import ProtocolProxyMessage
 
-from .models import Device, Point, Tag, CreateTagRequest, WritePointValueRequest
-
-
+from .models import (
+    IPAddress, LocalIPResponse, ProxyResponse, ScanResponse, 
+    PropertyReadResponse, DevicePropertiesResponse, WhoIsResponse, PingResponse
+)
 
 # TODO handle who is AND just one device.
 app = FastAPI()
@@ -25,19 +26,20 @@ app = FastAPI()
 DATABASE_URL = "sqlite:///./bacnet.db"
 engine = create_engine(DATABASE_URL)
 
+
 @app.on_event("startup")
 async def on_startup():
     SQLModel.metadata.create_all(engine)
     # Do not start the proxy here anymore
     pass
 
-@app.get("/get_local_ip")
-def get_local_ip(
-    target_ip: Optional[str] = Query(
-        None,
-        description="Optional. If provided, returns the local IP/interface that would be used to reach this target IP (useful for multi-homed systems). If not provided, defaults to 8.8.8.8 (internet route)."
-    )
-):
+
+@app.get("/get_local_ip", response_model=LocalIPResponse)
+def get_local_ip(target_ip: Optional[str] = Query(
+    None,
+    description=
+    "Optional. If provided, returns the local IP/interface that would be used to reach this target IP (useful for multi-homed systems). If not provided, defaults to 8.8.8.8 (internet route)."
+)):
     """
     Returns the local IP, subnet mask, and CIDR notation for the interface used to reach the target IP.
     If no target_ip is provided, defaults to 8.8.8.8 to determine the main outbound interface.
@@ -66,17 +68,32 @@ def get_local_ip(
                     break
             if iface_name and subnet_mask:
                 import ipaddress
-                net = ipaddress.IPv4Network(f"{local_ip}/{subnet_mask}", strict=False)
+                net = ipaddress.IPv4Network(f"{local_ip}/{subnet_mask}",
+                                            strict=False)
                 cidr = f"{local_ip}/{net.prefixlen}"
-                return {"local_ip": local_ip, "subnet_mask": subnet_mask, "cidr": cidr}
+                return LocalIPResponse(
+                    local_ip=local_ip,
+                    subnet_mask=subnet_mask,
+                    cidr=cidr
+                )
             else:
-                return {"local_ip": local_ip, "error": "Could not determine subnet mask for this interface."}
+                return LocalIPResponse(
+                    local_ip=local_ip,
+                    error="Could not determine subnet mask for this interface."
+                )
         except ImportError:
-            return {"local_ip": local_ip, "error": "netifaces package not installed. Install with 'pip install netifaces' to get subnet mask and CIDR."}
+            return LocalIPResponse(
+                local_ip=local_ip,
+                error="netifaces package not installed. Install with 'pip install netifaces' to get subnet mask and CIDR."
+            )
     except Exception:
-        return {"local_ip": "127.0.0.1", "error": "Could not determine local IP."}
+        return LocalIPResponse(
+            local_ip="127.0.0.1",
+            error="Could not determine local IP."
+        )
 
-@app.post("/start_proxy")
+
+@app.post("/start_proxy", response_model=ProxyResponse)
 async def start_proxy(local_device_address: Optional[str] = Form(None)):
     """
     Start the BACnet proxy with the given local device address (IP), or auto-detect if not provided.
@@ -91,13 +108,18 @@ async def start_proxy(local_device_address: Optional[str] = Form(None)):
                 local_device_address = s.getsockname()[0]
                 s.close()
             except Exception:
-                return {"status": "error", "error": "Could not auto-detect local IP address. Please specify manually."}
+                return ProxyResponse(
+                    status="error",
+                    error="Could not auto-detect local IP address. Please specify manually."
+                )
         # If a proxy is already running, stop it first
-        if hasattr(app.state, "bacnet_manager_task") and app.state.bacnet_manager_task:
+        if hasattr(app.state,
+                   "bacnet_manager_task") and app.state.bacnet_manager_task:
             app.state.bacnet_manager_task.cancel()
             await asyncio.sleep(0.5)
         app.state.bacnet_manager = AsyncioBACnetManager(local_device_address)
-        app.state.bacnet_manager_task = asyncio.create_task(app.state.bacnet_manager.run())
+        app.state.bacnet_manager_task = asyncio.create_task(
+            app.state.bacnet_manager.run())
         app.state.bacnet_proxy_local_address = local_device_address  # Save the address for later use
         # Wait a bit for registration
         await asyncio.sleep(3)
@@ -106,57 +128,155 @@ async def start_proxy(local_device_address: Optional[str] = Form(None)):
         proxy_id = manager.ppm.get_proxy_id((local_device_address, 0))
         peer = manager.ppm.peers.get(proxy_id)
         if not peer or not peer.socket_params:
-            return {"status": "error", "error": "Proxy not registered or missing socket_params."}
-        return {"status": "done", "address": local_device_address}
+            return ProxyResponse(
+                status="error",
+                error="Proxy not registered or missing socket_params."
+            )
+        return ProxyResponse(status="done", address=local_device_address)
     except Exception as e:
-        return {"status": "error", "error": str(e)}
-    
-@app.get("/get_windows_host_ip")
-def get_windows_host_ip():
+        return ProxyResponse(status="error", error=str(e))
+
+
+@app.get("/get_host_ip", response_model=IPAddress)
+def get_host_ip():
     """
-    Returns the first non-loopback IPv4 address from the Windows host (for WSL2 environments).
+    Returns the first non-loopback IPv4 address. Works on both WSL and native Linux systems.
+    For WSL: attempts to get Windows host IP via ipconfig.exe
+    For native Linux: returns the primary network interface IP
     """
     import subprocess
     import re
+    import os
+    import platform
+    
+    # First, try WSL method (ipconfig.exe)
     try:
-        output = subprocess.check_output(["ipconfig.exe"], encoding="utf-8", errors="ignore")
+        # Check if we're in WSL by looking for ipconfig.exe availability
+        subprocess.check_output(["which", "ipconfig.exe"], 
+                               stderr=subprocess.DEVNULL)
+        # We're in WSL, use the original method
+        output = subprocess.check_output(["ipconfig.exe"],
+                                         encoding="utf-8",
+                                         errors="ignore")
         ips = re.findall(r"IPv4 Address[. ]*: ([0-9.]+)", output)
         for ip in ips:
-            if not (ip.startswith("127.") or ip.startswith("172.") or ip.startswith("192.168.56.")):
-                return {"windows_host_ip": ip}
+            if not (ip.startswith("127.") or ip.startswith("172.")
+                    or ip.startswith("192.168.56.")):
+                return IPAddress(address=ip)
         if ips:
-            return {"windows_host_ip": ips[0]}
-        return {"error": "Could not determine Windows host IPv4 address."}
-    except Exception:
-        return {"error": "Could not determine Windows host IPv4 address."}
+            return IPAddress(address=ips[0])
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Not in WSL or ipconfig.exe not available, try Linux methods
+        pass
     
-@app.post("/bacnet/scan_ip_range")
-async def scan_ip_range(network_str: str = Form(...)):
+    # Native Linux method - try multiple approaches
+    try:
+        # Method 1: Use ip route to find default gateway interface IP
+        try:
+            # Get the default route interface
+            route_output = subprocess.check_output(
+                ["ip", "route", "show", "default"], 
+                encoding="utf-8"
+            )
+            # Extract interface name from default route
+            import re
+            match = re.search(r'dev\s+(\S+)', route_output)
+            if match:
+                interface = match.group(1)
+                # Get IP of that interface
+                addr_output = subprocess.check_output(
+                    ["ip", "addr", "show", interface],
+                    encoding="utf-8"
+                )
+                ip_match = re.search(r'inet\s+([0-9.]+)', addr_output)
+                if ip_match:
+                    ip = ip_match.group(1)
+                    if not ip.startswith("127."):
+                        return IPAddress(address=ip)
+        except (subprocess.CalledProcessError, AttributeError):
+            pass
+
+        # Method 2: Use hostname -I as fallback
+        try:
+            output = subprocess.check_output(["hostname", "-I"], 
+                                           encoding="utf-8")
+            ips = output.strip().split()
+            for ip in ips:
+                if not (ip.startswith("127.") or ip.startswith("172.")
+                        or ip.startswith("192.168.56.")):
+                    return IPAddress(address=ip)
+            if ips:
+                return IPAddress(address=ips[0])
+        except subprocess.CalledProcessError:
+            pass
+        
+        # Method 3: Parse /proc/net/route as last resort
+        try:
+            with open('/proc/net/route', 'r') as f:
+                for line in f:
+                    fields = line.strip().split()
+                    if len(fields) >= 2 and fields[1] == '00000000':  # Default route
+                        interface = fields[0]
+                        # Get IP for this interface
+                        addr_output = subprocess.check_output(
+                            ["ip", "addr", "show", interface],
+                            encoding="utf-8"
+                        )
+                        ip_match = re.search(r'inet\s+([0-9.]+)', addr_output)
+                        if ip_match:
+                            ip = ip_match.group(1)
+                            if not ip.startswith("127."):
+                                return IPAddress(address=ip)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pass
+        
+        # If we get here, we couldn't find any IP
+        raise HTTPException(status_code=500, detail="Could not determine host IPv4 address on this system.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not determine host IPv4 address: {str(e)}")
+
+
+@app.post("/bacnet/scan_subnet", response_model=ScanResponse)
+async def scan_subnet(subnet: str = Form(...)):
     """
-    Scan a range of IPs for BACnet devices using brute-force Who-Is.
-    Ensures each device result includes 'device_instance' (int), 'object-name', and a string 'deviceIdentifier'.
+    Scan a subnet (CIDR notation, e.g. 192.168.1.0/24) for BACnet devices using brute-force Who-Is.
+    Ensures each device result includes 'device_instance', 'object_name', 'deviceIdentifier', and extra BACnet info.
     """
     manager = app.state.bacnet_manager
     local_addr = app.state.bacnet_proxy_local_address
     proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
     peer = manager.ppm.peers.get(proxy_id)
     if not peer or not peer.socket_params:
-        return {"status": "error", "error": "Proxy not registered or missing, cannot scan."}
+        return ScanResponse(
+            status="error",
+            error="Proxy not registered or missing, cannot scan."
+        )
     from protocol_proxy.ipc import ProtocolProxyMessage
     import json
-    payload = {"network_str": network_str}
-    result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
-        method_name="SCAN_IP_RANGE",
-        payload=json.dumps(payload).encode('utf8'),
-        response_expected=True
-    ))
+    payload = {"network_str": subnet}
+    result = await manager.ppm.send(
+        peer.socket_params,
+        ProtocolProxyMessage(method_name="SCAN_IP_RANGE",
+                             payload=json.dumps(payload).encode('utf8'),
+                             response_expected=True))
     if asyncio.isfuture(result):
         result = await result
     try:
         value = json.loads(result.decode('utf8'))
-        # Post-process to ensure device_instance and string deviceIdentifier
+
+        # Check if this is a timeout error response
+        if isinstance(value, dict) and value.get(
+                'status') == 'error' and 'timed out' in value.get('error', ''):
+            return ScanResponse(
+                status="error",
+                error=f"Scan operation timed out: {value.get('error', 'Unknown timeout error')}"
+            )
+
+        # Post-process to ensure device_instance, string deviceIdentifier, and include extra BACnet info
+        from .models import BACnetDevice
         processed = []
         for dev in value:
+            print(f"[scan_subnet] Raw device dict: {dev}")  # DEBUG: print the raw device dict
             dev_out = dict(dev)
             # device_instance
             if 'device_instance' not in dev_out:
@@ -169,10 +289,36 @@ async def scan_ip_range(network_str: str = Form(...)):
                 did = dev_out['deviceIdentifier']
                 if isinstance(did, (list, tuple)):
                     dev_out['deviceIdentifier'] = f"{did[0]},{did[1]}"
-            processed.append(dev_out)
-        return {"status": "done", "devices": processed}
+            # Address (IP)
+            dev_out['address'] = dev.get('pduSource') or dev.get('scanned_ip_target')
+            # Object name
+            dev_out['object_name'] = dev.get('object-name')
+            # Extra BACnet info
+            dev_out['maxAPDULengthAccepted'] = dev.get('maxAPDULengthAccepted')
+            dev_out['segmentationSupported'] = dev.get('segmentationSupported')
+            dev_out['vendorID'] = dev.get('vendorID')
+            processed.append(BACnetDevice(**dev_out))
+        # Return successful result - devices will be empty list if no devices found
+        return ScanResponse(status="done", devices=processed)
+    except json.JSONDecodeError as e:
+        # Check if the result is empty or contains the old 'FOO' placeholder
+        result_str = result.decode('utf8', errors='replace') if isinstance(
+            result, bytes) else str(result)
+        if not result_str or result_str.strip() == 'FOO':
+            return ScanResponse(
+                status="error",
+                error="Scan operation timed out - no response received from BACnet proxy"
+            )
+        return ScanResponse(
+            status="error",
+            error=f"Error decoding scan_ip_range response: {e}. Raw response: {result_str[:200]}"
+        )
     except Exception as e:
-        return {"status": "error", "error": f"Error decoding scan_ip_range response: {e}"}
+        return ScanResponse(
+            status="error",
+            error=f"Error processing scan_ip_range response: {e}"
+        )
+
 
 def make_jsonable(obj):
     """
@@ -194,35 +340,48 @@ def make_jsonable(obj):
     if hasattr(obj, 'name') and hasattr(obj, 'value'):
         # Likely an enum
         return str(obj.name)
-    if hasattr(obj, '__class__') and obj.__class__.__name__.startswith('ObjectType'):
+    if hasattr(
+            obj,
+            '__class__') and obj.__class__.__name__.startswith('ObjectType'):
         return str(obj)
-    if isinstance(obj, ipaddress.IPv4Address) or isinstance(obj, ipaddress.IPv6Address):
+    if isinstance(obj, ipaddress.IPv4Address) or isinstance(
+            obj, ipaddress.IPv6Address):
         return str(obj)
     # Fallback to string
     return str(obj)
+
 
 def get_session():
     with Session(engine) as session:
         yield session
 
+
 @app.post("/write_property")
-async def write_property(device_address: str, object_identifier: str, property_identifier: str, value: Any,
-                         priority: int, property_array_index: int = None):
+async def write_property(device_address: str,
+                         object_identifier: str,
+                         property_identifier: str,
+                         value: Any,
+                         priority: int,
+                         property_array_index: int = None):
     """
     Write a value to a specific property of a device point.
     """
     ppm = ProtocolProxyManager.get_manager(BACnetProxy)
-    message = ProtocolProxyMessage(
-        method_name="WRITE_PROPERTY",
-        payload=json.dumps({
-            "device_address": device_address,
-            "object_identifier": object_identifier,
-            "property_identifier": property_identifier,
-            "value": value,
-            "priority": priority,
-            "property_array_index": property_array_index
-        }).encode('utf8')
-    )
+    message = ProtocolProxyMessage(method_name="WRITE_PROPERTY",
+                                   payload=json.dumps({
+                                       "device_address":
+                                       device_address,
+                                       "object_identifier":
+                                       object_identifier,
+                                       "property_identifier":
+                                       property_identifier,
+                                       "value":
+                                       value,
+                                       "priority":
+                                       priority,
+                                       "property_array_index":
+                                       property_array_index
+                                   }).encode('utf8'))
 
     remote_params = ppm.peers.socket_params
     send_result = await ppm.send(remote_params, message)
@@ -230,25 +389,30 @@ async def write_property(device_address: str, object_identifier: str, property_i
 
     return send_result
 
-@app.post("/read_property")
-async def read_property(
-    device_address: str = Form(...),
-    object_identifier: str = Form(...),
-    property_identifier: str = Form(...),
-    property_array_index: Optional[int] = Form(None)
-):
+
+@app.post("/read_property", response_model=PropertyReadResponse)
+async def read_property(device_address: str = Form(...),
+                        object_identifier: str = Form(...),
+                        property_identifier: str = Form(...),
+                        property_array_index: Optional[int] = Form(None)):
     """
     Perform a BACnet property read and return the result directly (waits for completion).
     """
-    print("[read_property] Using global AsyncioBACnetManager from app.state...")
+    print(
+        "[read_property] Using global AsyncioBACnetManager from app.state...")
     try:
         manager = app.state.bacnet_manager
         local_addr = app.state.bacnet_proxy_local_address
         proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
         peer = manager.ppm.peers.get(proxy_id)
         if not peer or not peer.socket_params:
-            print("[read_property] Proxy not registered or missing socket_params!")
-            return {"status": "error", "error": "Proxy not registered or missing socket_params, cannot send request."}
+            print(
+                "[read_property] Proxy not registered or missing socket_params!"
+            )
+            return PropertyReadResponse(
+                status="error",
+                error="Proxy not registered or missing socket_params, cannot send request."
+            )
         payload = {
             'device_address': device_address,
             'object_identifier': object_identifier,
@@ -258,11 +422,11 @@ async def read_property(
             payload['property_array_index'] = property_array_index
         print(f"[read_property] Sending ProtocolProxyMessage: {payload}")
 
-        result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
-            method_name='READ_PROPERTY',
-            payload=json.dumps(payload).encode('utf8'),
-            response_expected=True
-        ))
+        result = await manager.ppm.send(
+            peer.socket_params,
+            ProtocolProxyMessage(method_name='READ_PROPERTY',
+                                 payload=json.dumps(payload).encode('utf8'),
+                                 response_expected=True))
         print("[read_property] Got result from send()")
         if asyncio.isfuture(result):
             print("[read_property] Result is a Future, awaiting...")
@@ -271,20 +435,39 @@ async def read_property(
         try:
             value = json.loads(result.decode('utf8'))
             print(f"[read_property] Decoded value: {value}")
-            return {"status": "done", "result": value}
+            # --- Normalization logic for response ---
+            # If property is 'object-name', return {"object_name": ...}
+            # If value is {"_value": ...}, return just the value
+            normalized = value
+            if property_identifier.lower().replace("-", "_") == "object_name":
+                # Accept both 'object-name' and 'object_name'
+                if isinstance(value, dict):
+                    # Try to extract from common keys
+                    for k in ["object-name", "object_name", "_value", "value"]:
+                        if k in value:
+                            normalized = {"object_name": value[k]}
+                            break
+                    else:
+                        normalized = {"object_name": value}
+                else:
+                    normalized = {"object_name": value}
+            elif isinstance(value, dict) and set(value.keys()) == {"_value"}:
+                normalized = value["_value"]
+            return PropertyReadResponse(status="done", result=normalized)
         except Exception as e:
             print(f"[read_property] Error decoding BACnet response: {e}")
-            return {"status": "error", "error": f"Error decoding BACnet response: {e}"}
+            return PropertyReadResponse(
+                status="error",
+                error=f"Error decoding BACnet response: {e}"
+            )
     except Exception as e:
         print(f"[read_property] Exception: {e}")
-        return {"status": "error", "error": str(e)}
+        return PropertyReadResponse(status="error", error=str(e))
 
-# TODO add object cache
-@app.post("/bacnet/read_device_all")
-async def read_device_all(
-    device_address: str = Form(...),
-    device_object_identifier: str = Form(...)
-):
+
+@app.post("/bacnet/read_device_all", response_model=DevicePropertiesResponse)
+async def read_device_all(device_address: str = Form(...),
+                          device_object_identifier: str = Form(...)):
     """
     Read all standard properties from a BACnet device.
     """
@@ -293,37 +476,43 @@ async def read_device_all(
     proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
     peer = manager.ppm.peers.get(proxy_id)
     if not peer or not peer.socket_params:
-        return JSONResponse(content={"status": "error", "error": "Proxy not registered or missing, cannot read device."}, status_code=500)
+        return DevicePropertiesResponse(
+            status="error",
+            error="Proxy not registered or missing, cannot read device."
+        )
     from protocol_proxy.ipc import ProtocolProxyMessage
     import json
     payload = {
         "device_address": device_address,
         "device_object_identifier": device_object_identifier
     }
-    result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
-        method_name="READ_DEVICE_ALL",
-        payload=json.dumps(payload).encode('utf8'),
-        response_expected=True
-    ))
+    result = await manager.ppm.send(
+        peer.socket_params,
+        ProtocolProxyMessage(method_name="READ_DEVICE_ALL",
+                             payload=json.dumps(payload).encode('utf8'),
+                             response_expected=True))
     if asyncio.isfuture(result):
         result = await result
     print(f"[read_device_all] Raw result bytes: {result}")
     try:
         value = json.loads(result.decode('utf8'))
         jsonable = make_jsonable(value)
-        print(f"[read_device_all FastAPI] Returning to frontend: {jsonable}", 50 * "*")
-        return JSONResponse(content={"status": "done", "properties": jsonable})
+        print(f"[read_device_all FastAPI] Returning to frontend: {jsonable}",
+              50 * "*")
+        return DevicePropertiesResponse(status="done", properties=jsonable)
     except Exception as e:
         print(f"[read_device_all] Error decoding or serializing response: {e}")
-        return JSONResponse(content={"status": "error", "error": f"Error decoding read_device_all response: {e}"}, status_code=500)
+        return DevicePropertiesResponse(
+            status="error",
+            error=f"Error decoding read_device_all response: {e}"
+        )
+
 
 #TODO create callbacks
-@app.post("/bacnet/who_is")
-async def who_is(
-    device_instance_low: int = Form(...),
-    device_instance_high: int = Form(...),
-    dest: str = Form(...)
-):
+@app.post("/bacnet/who_is", response_model=WhoIsResponse)
+async def who_is(device_instance_low: int = Form(...),
+                 device_instance_high: int = Form(...),
+                 dest: str = Form(...)):
     """
     Send a Who-Is request to a BACnet address or range.
     """
@@ -332,7 +521,10 @@ async def who_is(
     proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
     peer = manager.ppm.peers.get(proxy_id)
     if not peer or not peer.socket_params:
-        return {"status": "error", "error": "Proxy not registered or missing, cannot send Who-Is."}
+        return WhoIsResponse(
+            status="error",
+            error="Proxy not registered or missing, cannot send Who-Is."
+        )
     from protocol_proxy.ipc import ProtocolProxyMessage
     import json
     payload = {
@@ -340,24 +532,30 @@ async def who_is(
         "device_instance_high": device_instance_high,
         "dest": dest
     }
-    result = await manager.ppm.send(peer.socket_params, ProtocolProxyMessage(
-        method_name="WHO_IS",
-        payload=json.dumps(payload).encode('utf8'),
-        response_expected=True
-    ))
+    result = await manager.ppm.send(
+        peer.socket_params,
+        ProtocolProxyMessage(method_name="WHO_IS",
+                             payload=json.dumps(payload).encode('utf8'),
+                             response_expected=True))
     if asyncio.isfuture(result):
         result = await result
     try:
         value = json.loads(result.decode('utf8'))
-        return {"status": "done", "devices": value}
+        return WhoIsResponse(status="done", devices=value)
     except Exception as e:
-        return {"status": "error", "error": f"Error decoding who_is response: {e}"}
+        return WhoIsResponse(
+            status="error",
+            error=f"Error decoding who_is response: {e}"
+        )
+
+
 # Temporary stubs to avoid NameError in endpoints
 
 device_points = {}
 point_tags = {}
 
-@app.post("/ping_ip")
+
+@app.post("/ping_ip", response_model=PingResponse)
 async def ping_ip(ip_address: str = Form(...)):
     """
     Ping the given IP address and return the result. Waits for a response, shows loading in UI until done.
@@ -376,30 +574,31 @@ async def ping_ip(ip_address: str = Form(...)):
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+            stderr=asyncio.subprocess.PIPE)
         stdout, stderr = await proc.communicate()
         success = proc.returncode == 0
         result = stdout.decode() if stdout else stderr.decode()
-        return {
-            "ip_address": ip_address,
-            "success": success,
-            "output": result.strip()
-        }
+        return PingResponse(
+            ip_address=ip_address,
+            success=success,
+            output=result.strip()
+        )
     except Exception as e:
-        return {
-            "ip_address": ip_address,
-            "success": False,
-            "error": str(e)
-        }
+        return PingResponse(
+            ip_address=ip_address,
+            success=False,
+            error=str(e)
+        )
 
-@app.post("/stop_proxy")
+
+@app.post("/stop_proxy", response_model=ProxyResponse)
 async def stop_proxy():
     """
     Stop the running BACnet proxy and clean up state.
     """
     try:
-        if hasattr(app.state, "bacnet_manager_task") and app.state.bacnet_manager_task:
+        if hasattr(app.state,
+                   "bacnet_manager_task") and app.state.bacnet_manager_task:
             app.state.bacnet_manager_task.cancel()
             await asyncio.sleep(0.5)
             app.state.bacnet_manager_task = None
@@ -407,6 +606,6 @@ async def stop_proxy():
             app.state.bacnet_manager = None
         if hasattr(app.state, "bacnet_proxy_local_address"):
             app.state.bacnet_proxy_local_address = None
-        return {"status": "done", "message": "BACnet proxy stopped."}
+        return ProxyResponse(status="done", message="BACnet proxy stopped.")
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return ProxyResponse(status="error", error=str(e))

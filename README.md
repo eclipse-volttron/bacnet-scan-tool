@@ -1,5 +1,27 @@
 # BACnet Scan Tool API
 
+## About
+
+The BACnet Scan Tool is a FastAPI-based web service that provides a comprehensive interface for discovering, communicating with, and managing BACnet devices on your network. This tool acts as a bridge between web applications and BACnet networks, offering both REST API endpoints and an interactive web interface for BACnet operations.
+
+### Key Features
+
+- **Device Discovery**: Scan IP ranges to automatically discover BACnet devices using Who-Is requests
+- **Property Operations**: Read and write BACnet device properties with full support for array indices and priority levels
+- **Network Intelligence**: Automatically detect local network interfaces and provide guidance for optimal scanning
+- **Cross-Platform Support**: Works on Linux, Windows, and WSL2 environments with automatic network configuration
+- **Interactive API**: Built-in Swagger UI for easy testing and exploration of all endpoints
+
+### Use Cases
+
+- **Building Automation Integration**: Connect web applications to BACnet building systems
+- **Network Commissioning**: Discover and verify BACnet devices during installation
+- **System Monitoring**: Read device properties for monitoring and reporting applications
+- **Device Configuration**: Write properties to configure BACnet devices remotely
+- **Network Troubleshooting**: Identify and diagnose BACnet communication issues
+
+This tool is particularly useful for developers building web-based building automation systems, facility managers needing to monitor BACnet networks, and system integrators working with BACnet devices.
+
 ## Build
 
 To build the `bacnet-scan-tool`, ensure you have Python 3.10 or higher installed, then run the following commands:
@@ -37,8 +59,6 @@ Once Poetry is installed, set up the virtual environment and install dependencie
 poetry install
 ```
 
-
-
 ## Usage
 
 ### Start the FastAPI Web Server
@@ -64,7 +84,7 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
      - Advanced: Provide `local_device_address` to bind to a specific local IP/interface.
      - **Returns:**
        ```json
-       { "status": "done", "address": "172.18.229.191" }
+       { "status": "done", "address": "192.168.1.100" }
        ```
        On error:
        ```json
@@ -76,7 +96,7 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
      - Returns the local IP, subnet mask, and CIDR for the interface used to reach a target IP (default is 8.8.8.8).
      - **Returns:**
        ```json
-       { "local_ip": "172.18.229.191", "subnet_mask": "255.255.240.0", "cidr": "172.18.229.191/20" }
+       { "local_ip": "192.168.1.100", "subnet_mask": "255.255.255.0", "cidr": "192.168.1.100/24" }
        ```
        On error:
        ```json
@@ -88,7 +108,7 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
      - Returns the first non-loopback IPv4 address from the Windows host (helpful for WSL2 environments).
      - **Returns:**
        ```json
-       { "windows_host_ip": "130.20.125.77" }
+       { "windows_host_ip": "192.168.1.50" }
        ```
      - **Tip:** Use this if you know your BACnet device is on the same network as your Windows host. You can use the returned IP to determine the correct subnet for scanning.
 
@@ -102,24 +122,24 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
          "status": "done",
          "devices": [
            {
-             "pduSource": "130.20.24.157",
-             "deviceIdentifier": "8,506892",
-             "maxAPDULengthAccepted": 1024,
-             "segmentationSupported": "segmented-both",
-             "vendorID": 5,
-             "object-name": "3820a",
-             "scanned_ip_target": "130.20.24.157",
-             "device_instance": 506892
-           },
-           {
-             "pduSource": "130.20.24.158",
+             "pduSource": "192.168.1.101",
              "deviceIdentifier": "8,123456",
              "maxAPDULengthAccepted": 1024,
              "segmentationSupported": "segmented-both",
              "vendorID": 5,
-             "object-name": "3820b",
-             "scanned_ip_target": "130.20.24.158",
+             "object-name": "Device-A",
+             "scanned_ip_target": "192.168.1.101",
              "device_instance": 123456
+           },
+           {
+             "pduSource": "192.168.1.102",
+             "deviceIdentifier": "8,789012",
+             "maxAPDULengthAccepted": 1024,
+             "segmentationSupported": "segmented-both",
+             "vendorID": 5,
+             "object-name": "Device-B",
+             "scanned_ip_target": "192.168.1.102",
+             "device_instance": 789012
            }
          ]
        }
@@ -221,7 +241,7 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
   - **Description:** Returns the local IP address your machine would use to reach a given BACnet device or network.
   - **Query Parameter:**
     - `target_ip`: The IP address of the BACnet device or network you want to reach.
-  - **Returns:** Local IP address.
+  - **Returns:** Local IP address
 
 You can also use the interactive API documentation:
 - Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
