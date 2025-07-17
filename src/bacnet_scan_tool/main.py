@@ -620,3 +620,36 @@ async def stop_proxy():
         return ProxyResponse(status="done", message="BACnet proxy stopped.")
     except Exception as e:
         return ProxyResponse(status="error", error=str(e))
+
+from fastapi.responses import JSONResponse
+# TODO make it handle larger responsese from the proxy and implement model
+@app.post("/bacnet/read_object_list_names")
+async def read_object_list_names(device_address: str = Form(...), device_object_identifier: str = Form(...)):
+    """
+    Reads the object-list from a device, then reads object-name for each object in the list.
+    Returns a dict mapping object-identifier to object-name.
+    """
+    manager = app.state.bacnet_manager
+    local_addr = app.state.bacnet_proxy_local_address
+    proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
+    peer = manager.ppm.peers.get(proxy_id)
+    if not peer or not peer.socket_params:
+        return JSONResponse(content={"status": "error", "error": "Proxy not registered or missing, cannot read object list names."})
+    from protocol_proxy.ipc import ProtocolProxyMessage
+    import json
+    payload = {
+        "device_address": device_address,
+        "device_object_identifier": device_object_identifier
+    }
+    result = await manager.ppm.send(
+        peer.socket_params,
+        ProtocolProxyMessage(method_name="READ_OBJECT_LIST_NAMES",
+                             payload=json.dumps(payload).encode('utf8'),
+                             response_expected=True))
+    if asyncio.isfuture(result):
+        result = await result
+    try:
+        value = json.loads(result.decode('utf8'))
+        return JSONResponse(content={"status": "done", "results": value})
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "error": str(e)})
