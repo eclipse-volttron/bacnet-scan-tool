@@ -13,7 +13,8 @@ from protocol_proxy.ipc import ProtocolProxyMessage
 
 from .models import (
     IPAddress, LocalIPResponse, ProxyResponse, ScanResponse, 
-    PropertyReadResponse, DevicePropertiesResponse, WhoIsResponse, PingResponse
+    PropertyReadResponse, DevicePropertiesResponse, WhoIsResponse, PingResponse,
+    ObjectListNamesResponse, PaginationInfo
 )
 
 # TODO handle who is AND just one device.
@@ -623,33 +624,89 @@ async def stop_proxy():
 
 from fastapi.responses import JSONResponse
 # TODO make it handle larger responsese from the proxy and implement model
-@app.post("/bacnet/read_object_list_names")
-async def read_object_list_names(device_address: str = Form(...), device_object_identifier: str = Form(...)):
+@app.post("/bacnet/read_object_list_names", response_model=ObjectListNamesResponse)
+async def read_object_list_names(
+    device_address: str = Form(...), 
+    device_object_identifier: str = Form(...),
+    page: int = Form(1),
+    page_size: int = Form(100)
+):
     """
     Reads the object-list from a device, then reads object-name for each object in the list.
-    Returns a dict mapping object-identifier to object-name.
+    Returns a paginated dict mapping object-identifier to object-name.
+    
+    Args:
+        device_address: BACnet device address
+        device_object_identifier: Device object identifier
+        page: Page number (1-based)
+        page_size: Number of objects per page (default 100)
     """
+    # Validate pagination parameters
+    if page < 1:
+        return ObjectListNamesResponse(status="error", error="Page number must be 1 or greater")
+    if page_size < 1 or page_size > 1000:
+        return ObjectListNamesResponse(status="error", error="Page size must be between 1 and 1000")
+    
     manager = app.state.bacnet_manager
     local_addr = app.state.bacnet_proxy_local_address
     proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
     peer = manager.ppm.peers.get(proxy_id)
     if not peer or not peer.socket_params:
-        return JSONResponse(content={"status": "error", "error": "Proxy not registered or missing, cannot read object list names."})
+        return ObjectListNamesResponse(status="error", error="Proxy not registered or missing, cannot read object list names.")
     from protocol_proxy.ipc import ProtocolProxyMessage
     import json
     payload = {
         "device_address": device_address,
-        "device_object_identifier": device_object_identifier
+        "device_object_identifier": device_object_identifier,
+        "page": page,
+        "page_size": page_size
     }
-    result = await manager.ppm.send(
-        peer.socket_params,
-        ProtocolProxyMessage(method_name="READ_OBJECT_LIST_NAMES",
-                             payload=json.dumps(payload).encode('utf8'),
-                             response_expected=True))
-    if asyncio.isfuture(result):
-        result = await result
+    
+    # Add timeout handling for large responses
     try:
-        value = json.loads(result.decode('utf8'))
-        return JSONResponse(content={"status": "done", "results": value})
+        result = await asyncio.wait_for(
+            manager.ppm.send(
+                peer.socket_params,
+                ProtocolProxyMessage(method_name="READ_OBJECT_LIST_NAMES",
+                                   payload=json.dumps(payload).encode('utf8'),
+                                   response_expected=True)
+            ),
+            timeout=120  # 2 minutes timeout
+        )
+        
+        if asyncio.isfuture(result):
+            result = await result
+            
+        # Parse the response from the proxy
+        response = json.loads(result.decode('utf8'))
+        
+        # Convert to our model format
+        if response.get('status') == 'done':
+            pagination_data = response.get('pagination', {})
+            pagination = PaginationInfo(
+                page=pagination_data.get('page', page),
+                page_size=pagination_data.get('page_size', page_size),
+                total_items=pagination_data.get('total_items', 0),
+                total_pages=pagination_data.get('total_pages', 0),
+                has_next=pagination_data.get('has_next', False),
+                has_previous=pagination_data.get('has_previous', False)
+            )
+            
+            # Results are already simple string mapping: object_identifier -> object_name
+            results = response.get('results', {})
+            
+            return ObjectListNamesResponse(
+                status="done",
+                results=results,
+                pagination=pagination
+            )
+        else:
+            return ObjectListNamesResponse(
+                status="error",
+                error=response.get('error', 'Unknown error occurred')
+            )
+        
+    except asyncio.TimeoutError:
+        return ObjectListNamesResponse(status="error", error="Request timed out after 2 minutes")
     except Exception as e:
-        return JSONResponse(content={"status": "error", "error": str(e)})
+        return ObjectListNamesResponse(status="error", error=str(e))

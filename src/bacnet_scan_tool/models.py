@@ -52,3 +52,17 @@ class PingResponse(BaseModel):
     success: bool
     output: Optional[str] = None
     error: Optional[str] = None
+
+class PaginationInfo(BaseModel):
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
+
+class ObjectListNamesResponse(BaseModel):
+    status: str
+    results: Optional[Dict[str, str]] = None  # object_identifier -> object_name mapping
+    pagination: Optional[PaginationInfo] = None
+    error: Optional[str] = None
