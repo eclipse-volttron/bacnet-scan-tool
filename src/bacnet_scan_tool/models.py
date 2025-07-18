@@ -2,27 +2,6 @@ from sqlmodel import SQLModel, Field
 from typing import Optional, List, Any, Dict
 from pydantic import BaseModel
 
-class Device(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    ip_address: str
-
-class Point(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    device_id: int
-    name: str
-
-class Tag(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    point_id: int
-    name: str
-
-# Pydantic request models
-class CreateTagRequest(BaseModel):
-    name: str
-
-class WritePointValueRequest(BaseModel):
-    value: str
-
 class IPAddress(BaseModel):
     address: str
 
@@ -42,7 +21,6 @@ class ProxyResponse(BaseModel):
 class BACnetDevice(BaseModel):
     device_instance: int
     deviceIdentifier: str
-    object_name: Optional[str] = None
     address: Optional[str] = None
     maxAPDULengthAccepted: Optional[int] = None
     segmentationSupported: Optional[str] = None
@@ -52,6 +30,7 @@ class ScanResponse(BaseModel):
     status: str
     devices: Optional[List[BACnetDevice]] = None
     error: Optional[str] = None
+    ips_scanned: int
 
 class PropertyReadResponse(BaseModel):
     status: str
@@ -72,4 +51,18 @@ class PingResponse(BaseModel):
     ip_address: str
     success: bool
     output: Optional[str] = None
+    error: Optional[str] = None
+
+class PaginationInfo(BaseModel):
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
+
+class ObjectListNamesResponse(BaseModel):
+    status: str
+    results: Optional[Dict[str, str]] = None  # object_identifier -> object_name mapping
+    pagination: Optional[PaginationInfo] = None
     error: Optional[str] = None

@@ -1,13 +1,10 @@
 import asyncio
 import json
-import uuid
-from typing import Optional, Any
 import socket
+from typing import Optional, Any
 
 from fastapi import FastAPI, HTTPException, Depends, Form, Query
-from fastapi.responses import JSONResponse
 from sqlmodel import SQLModel, Session, create_engine, select
-from pydantic import BaseModel
 
 from protocol_proxy.bacnet_manager import AsyncioBACnetManager
 from protocol_proxy.manager import ProtocolProxyManager
@@ -16,7 +13,8 @@ from protocol_proxy.ipc import ProtocolProxyMessage
 
 from .models import (
     IPAddress, LocalIPResponse, ProxyResponse, ScanResponse, 
-    PropertyReadResponse, DevicePropertiesResponse, WhoIsResponse, PingResponse
+    PropertyReadResponse, DevicePropertiesResponse, WhoIsResponse, PingResponse,
+    ObjectListNamesResponse, PaginationInfo
 )
 
 # TODO handle who is AND just one device.
@@ -30,7 +28,6 @@ engine = create_engine(DATABASE_URL)
 @app.on_event("startup")
 async def on_startup():
     SQLModel.metadata.create_all(engine)
-    # Do not start the proxy here anymore
     pass
 
 
@@ -247,16 +244,31 @@ async def scan_subnet(subnet: str = Form(...)):
     proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
     peer = manager.ppm.peers.get(proxy_id)
     if not peer or not peer.socket_params:
+        # Calculate number of IPs in the subnet for error case
+        import ipaddress
+        try:
+            net = ipaddress.ip_network(subnet, strict=False)
+            ips_scanned = net.num_addresses - 2 if net.num_addresses > 2 else net.num_addresses
+        except Exception:
+            ips_scanned = 0
         return ScanResponse(
             status="error",
-            error="Proxy not registered or missing, cannot scan."
+            error="Proxy not registered or missing, cannot scan.",
+            ips_scanned=ips_scanned
         )
     from protocol_proxy.ipc import ProtocolProxyMessage
     import json
     payload = {"network_str": subnet}
+    # Calculate number of IPs in the subnet
+    import ipaddress
+    try:
+        net = ipaddress.ip_network(subnet, strict=False)
+        ips_scanned = net.num_addresses - 2 if net.num_addresses > 2 else net.num_addresses
+    except Exception:
+        ips_scanned = 0
     result = await manager.ppm.send(
         peer.socket_params,
-        ProtocolProxyMessage(method_name="SCAN_IP_RANGE",
+        ProtocolProxyMessage(method_name="SCAN_SUBNET",
                              payload=json.dumps(payload).encode('utf8'),
                              response_expected=True))
     if asyncio.isfuture(result):
@@ -269,54 +281,54 @@ async def scan_subnet(subnet: str = Form(...)):
                 'status') == 'error' and 'timed out' in value.get('error', ''):
             return ScanResponse(
                 status="error",
-                error=f"Scan operation timed out: {value.get('error', 'Unknown timeout error')}"
+                error=f"Scan operation timed out: {value.get('error', 'Unknown timeout error')}",
+                ips_scanned=ips_scanned
             )
 
-        # Post-process to ensure device_instance, string deviceIdentifier, and include extra BACnet info
+        # Only return the minimal Who-Is/I-Am response data for each device
         from .models import BACnetDevice
         processed = []
         for dev in value:
-            print(f"[scan_subnet] Raw device dict: {dev}")  # DEBUG: print the raw device dict
-            dev_out = dict(dev)
-            # device_instance
-            if 'device_instance' not in dev_out:
-                # Try to extract from deviceIdentifier
-                did = dev_out.get('deviceIdentifier')
-                if isinstance(did, (list, tuple)) and len(did) == 2:
-                    dev_out['device_instance'] = did[1]
-            # deviceIdentifier as string
-            if 'deviceIdentifier' in dev_out:
-                did = dev_out['deviceIdentifier']
-                if isinstance(did, (list, tuple)):
-                    dev_out['deviceIdentifier'] = f"{did[0]},{did[1]}"
-            # Address (IP)
-            dev_out['address'] = dev.get('pduSource') or dev.get('scanned_ip_target')
-            # Object name
-            dev_out['object_name'] = dev.get('object-name')
-            # Extra BACnet info
-            dev_out['maxAPDULengthAccepted'] = dev.get('maxAPDULengthAccepted')
-            dev_out['segmentationSupported'] = dev.get('segmentationSupported')
-            dev_out['vendorID'] = dev.get('vendorID')
+            dev_out = {}
+            # Only keep the fields from the I-Am response
+            for k in ["pduSource", "deviceIdentifier", "maxAPDULengthAccepted", "segmentationSupported", "vendorID"]:
+                if k in dev:
+                    dev_out[k] = dev[k]
+            # Fix deviceIdentifier and device_instance for BACnetDevice model
+            did = dev_out.get("deviceIdentifier")
+            if isinstance(did, (list, tuple)) and len(did) == 2:
+                dev_out["device_instance"] = did[1]
+                dev_out["deviceIdentifier"] = f"{did[0]},{did[1]}"
+            # Extract IP address from pduSource (if present)
+            pdu_source = dev.get("pduSource")
+            if isinstance(pdu_source, str):
+                # If pduSource is an IP:port string, extract just the IP
+                if ":" in pdu_source:
+                    dev_out["address"] = pdu_source.split(":")[0]
+                else:
+                    dev_out["address"] = pdu_source
+            else:
+                dev_out["address"] = None
             processed.append(BACnetDevice(**dev_out))
-        # Return successful result - devices will be empty list if no devices found
-        return ScanResponse(status="done", devices=processed)
+        return ScanResponse(status="done", devices=processed, ips_scanned=ips_scanned)
     except json.JSONDecodeError as e:
-        # Check if the result is empty or contains the old 'FOO' placeholder
-        result_str = result.decode('utf8', errors='replace') if isinstance(
-            result, bytes) else str(result)
+        result_str = result.decode('utf8', errors='replace') if isinstance(result, bytes) else str(result)
         if not result_str or result_str.strip() == 'FOO':
             return ScanResponse(
                 status="error",
-                error="Scan operation timed out - no response received from BACnet proxy"
+                error="Scan operation timed out - no response received from BACnet proxy",
+                ips_scanned=ips_scanned
             )
         return ScanResponse(
             status="error",
-            error=f"Error decoding scan_ip_range response: {e}. Raw response: {result_str[:200]}"
+            error=f"Error decoding scan_ip_range response: {e}. Raw response: {result_str[:200]}",
+            ips_scanned=ips_scanned
         )
     except Exception as e:
         return ScanResponse(
             status="error",
-            error=f"Error processing scan_ip_range response: {e}"
+            error=f"Error processing scan_ip_range response: {e}",
+            ips_scanned=ips_scanned
         )
 
 
@@ -609,3 +621,92 @@ async def stop_proxy():
         return ProxyResponse(status="done", message="BACnet proxy stopped.")
     except Exception as e:
         return ProxyResponse(status="error", error=str(e))
+
+from fastapi.responses import JSONResponse
+# TODO make it handle larger responsese from the proxy and implement model
+@app.post("/bacnet/read_object_list_names", response_model=ObjectListNamesResponse)
+async def read_object_list_names(
+    device_address: str = Form(...), 
+    device_object_identifier: str = Form(...),
+    page: int = Form(1),
+    page_size: int = Form(100)
+):
+    """
+    Reads the object-list from a device, then reads object-name for each object in the list.
+    Returns a paginated dict mapping object-identifier to object-name.
+    
+    Args:
+        device_address: BACnet device address
+        device_object_identifier: Device object identifier
+        page: Page number (1-based)
+        page_size: Number of objects per page (default 100)
+    """
+    # Validate pagination parameters
+    if page < 1:
+        return ObjectListNamesResponse(status="error", error="Page number must be 1 or greater")
+    if page_size < 1 or page_size > 1000:
+        return ObjectListNamesResponse(status="error", error="Page size must be between 1 and 1000")
+    
+    manager = app.state.bacnet_manager
+    local_addr = app.state.bacnet_proxy_local_address
+    proxy_id = manager.ppm.get_proxy_id((local_addr, 0))
+    peer = manager.ppm.peers.get(proxy_id)
+    if not peer or not peer.socket_params:
+        return ObjectListNamesResponse(status="error", error="Proxy not registered or missing, cannot read object list names.")
+    from protocol_proxy.ipc import ProtocolProxyMessage
+    import json
+    payload = {
+        "device_address": device_address,
+        "device_object_identifier": device_object_identifier,
+        "page": page,
+        "page_size": page_size
+    }
+    
+    # Add timeout handling for large responses
+    try:
+        result = await asyncio.wait_for(
+            manager.ppm.send(
+                peer.socket_params,
+                ProtocolProxyMessage(method_name="READ_OBJECT_LIST_NAMES",
+                                   payload=json.dumps(payload).encode('utf8'),
+                                   response_expected=True)
+            ),
+            timeout=120  # 2 minutes timeout
+        )
+        
+        if asyncio.isfuture(result):
+            result = await result
+            
+        # Parse the response from the proxy
+        response = json.loads(result.decode('utf8'))
+        
+        # Convert to our model format
+        if response.get('status') == 'done':
+            pagination_data = response.get('pagination', {})
+            pagination = PaginationInfo(
+                page=pagination_data.get('page', page),
+                page_size=pagination_data.get('page_size', page_size),
+                total_items=pagination_data.get('total_items', 0),
+                total_pages=pagination_data.get('total_pages', 0),
+                has_next=pagination_data.get('has_next', False),
+                has_previous=pagination_data.get('has_previous', False)
+            )
+            
+            # Results are already simple string mapping: object_identifier -> object_name
+            results = response.get('results', {})
+            
+            return ObjectListNamesResponse(
+                status="done",
+                results=results,
+                pagination=pagination
+            )
+        else:
+            return ObjectListNamesResponse(
+                status="error",
+                error=response.get('error', 'Unknown error occurred')
+            )
+        
+    except asyncio.TimeoutError:
+        return ObjectListNamesResponse(status="error", error="Request timed out after 2 minutes")
+    except Exception as e:
+        return ObjectListNamesResponse(status="error", error=str(e))
