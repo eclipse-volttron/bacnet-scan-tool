@@ -1,6 +1,6 @@
 from sqlmodel import SQLModel, Field
-from typing import Optional, List, Any, Dict
-from pydantic import BaseModel
+from typing import Optional, List, Any, Dict, Union
+from pydantic import BaseModel, field_validator
 
 class IPAddress(BaseModel):
     address: str
@@ -61,8 +61,13 @@ class PaginationInfo(BaseModel):
     has_next: bool
     has_previous: bool
 
+class ObjectProperties(BaseModel):
+    object_name: str
+    units: Optional[str] = None
+    present_value: Optional[str] = None
+
 class ObjectListNamesResponse(BaseModel):
     status: str
-    results: Optional[Dict[str, str]] = None  # object_identifier -> object_name mapping
+    results: Optional[Dict[str, ObjectProperties]] = None
     pagination: Optional[PaginationInfo] = None
     error: Optional[str] = None
