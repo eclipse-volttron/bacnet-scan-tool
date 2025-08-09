@@ -212,10 +212,19 @@ def get_host_ip():
 
 
 @app.post("/bacnet/scan_subnet", response_model=ScanResponse)
-async def scan_subnet(subnet: str = Form(...)):
+async def scan_subnet(
+    subnet: str = Form(...),
+    whois_timeout: Optional[float] = Form(None),
+    port: Optional[int] = Form(None),
+    low_id: Optional[int] = Form(None),
+    high_id: Optional[int] = Form(None),
+    enable_brute_force: Optional[bool] = Form(None),
+    semaphore_limit: Optional[int] = Form(None),
+    max_duration: Optional[float] = Form(None)
+):
     """
-    Scan a subnet (CIDR notation, e.g. 192.168.1.0/24) for BACnet devices using brute-force Who-Is.
-    Ensures each device result includes 'device_instance', 'object_name', 'deviceIdentifier', and extra BACnet info.
+    Scan a subnet (CIDR notation, e.g. 192.168.1.0/24) for BACnet devices using hybrid Who-Is.
+    All parameters except subnet are optional and will use backend defaults if not provided.
     """
     manager = app.state.bacnet_manager
     peer = app.state.bacnet_proxy_peer
@@ -233,7 +242,25 @@ async def scan_subnet(subnet: str = Form(...)):
         )
     from protocol_proxy.ipc import ProtocolProxyMessage
     import json
+    
+    # Build payload with only non-None/non-empty values
     payload = {"network": subnet}
+    
+    # Handle optional parameters, filtering out None, empty strings, and 0 values where appropriate
+    if whois_timeout is not None and whois_timeout > 0:
+        payload["whois_timeout"] = whois_timeout
+    if port is not None and port > 0:
+        payload["port"] = port
+    if low_id is not None and low_id >= 0:
+        payload["low_id"] = low_id
+    if high_id is not None and high_id >= 0:
+        payload["high_id"] = high_id
+    if enable_brute_force is not None:
+        payload["enable_brute_force"] = enable_brute_force
+    if semaphore_limit is not None and semaphore_limit > 0:
+        payload["semaphore_limit"] = semaphore_limit
+    if max_duration is not None and max_duration > 0:
+        payload["max_duration"] = max_duration
     import ipaddress
     try:
         net = ipaddress.ip_network(subnet, strict=False)
