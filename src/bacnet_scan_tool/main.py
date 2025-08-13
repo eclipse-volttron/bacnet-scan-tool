@@ -604,7 +604,8 @@ async def read_object_list_names(
     device_address: str = Form(...), 
     device_object_identifier: str = Form(...),
     page: int = Form(1),
-    page_size: int = Form(100)
+    page_size: int = Form(100),
+    force_fresh_read: bool = Form(False)
 ):
     """
     Reads the object-list from a device, then reads object-name and units for each object in the list.
@@ -615,6 +616,7 @@ async def read_object_list_names(
         device_object_identifier: Device object identifier
         page: Page number (1-based)
         page_size: Number of objects per page (default 100)
+        force_fresh_read: If True, bypass cache and read fresh from device (default False)
     """
     # Validate pagination parameters
     if page < 1:
@@ -632,7 +634,8 @@ async def read_object_list_names(
         "device_address": device_address,
         "device_object_identifier": device_object_identifier,
         "page": page,
-        "page_size": page_size
+        "page_size": page_size,
+        "force_fresh_read": force_fresh_read
     }
     
     try:
