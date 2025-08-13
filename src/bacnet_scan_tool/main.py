@@ -220,11 +220,22 @@ async def scan_subnet(
     high_id: Optional[int] = Form(None),
     enable_brute_force: Optional[bool] = Form(None),
     semaphore_limit: Optional[int] = Form(None),
-    max_duration: Optional[float] = Form(None)
+    max_duration: Optional[float] = Form(None),
+    force_fresh_scan: Optional[bool] = Form(False)
 ):
     """
     Scan a subnet (CIDR notation, e.g. 192.168.1.0/24) for BACnet devices using hybrid Who-Is.
     All parameters except subnet are optional and will use backend defaults if not provided.
+    
+    Parameters:
+    - subnet: Network in CIDR notation (required)
+    - whois_timeout: Timeout for Who-Is broadcasts (default: 3.0s)
+    - port: BACnet port (default: 47808)
+    - low_id/high_id: Device instance range (default: 0-4194303)
+    - enable_brute_force: Enable unicast sweep fallback (default: True)
+    - semaphore_limit: Concurrency limit (default: 20)
+    - max_duration: Maximum scan duration (default: 280s)
+    - force_fresh_scan: Skip cache and force fresh scan (default: False)
     """
     manager = app.state.bacnet_manager
     peer = app.state.bacnet_proxy_peer
@@ -261,6 +272,8 @@ async def scan_subnet(
         payload["semaphore_limit"] = semaphore_limit
     if max_duration is not None and max_duration > 0:
         payload["max_duration"] = max_duration
+    if force_fresh_scan is not None:
+        payload["force_fresh_scan"] = force_fresh_scan
     import ipaddress
     try:
         net = ipaddress.ip_network(subnet, strict=False)
