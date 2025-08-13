@@ -10,9 +10,10 @@ from protocol_proxy.manager.asyncio import AsyncioProtocolProxyManager
 from protocol_proxy.protocol.bacnet import BACnetProxy
 
 from .models import (
-    IPAddress, LocalIPResponse, ProxyResponse, ScanResponse, 
+    IPAddress, LocalIPResponse, ProxyResponse, ScanResponse,
     PropertyReadResponse, DevicePropertiesResponse, WhoIsResponse, PingResponse,
-    ObjectListNamesResponse, PaginationInfo, ObjectProperties
+    ObjectListNamesResponse, PaginationInfo, ObjectProperties,
+    SavedDevice, ScannedPoint, SavedScansResponse, ScannedPointsResponse
 )
 
 app = FastAPI()
@@ -731,3 +732,93 @@ async def stop_proxy():
         return ProxyResponse(status="done", message="BACnet proxy stopped.")
     except Exception as e:
         return ProxyResponse(status="error", error=str(e))
+
+
+@app.get("/retrieve_saved_scans", response_model=SavedScansResponse)
+async def retrieve_saved_scans():
+    """
+    Retrieve all discovered devices from the JSON cache file.
+    Returns the complete list of scanned devices.
+    """
+    try:
+        from pathlib import Path
+        cache_dir = Path.home() / '.bacnet_scan_tool'
+        json_file = cache_dir / 'discovered_devices.json'
+        
+        if not json_file.exists():
+            return {
+                "status": "error",
+                "error": "No saved scans found. Run a subnet scan first.",
+                "devices": [],
+                "total_count": 0
+            }
+        
+        with open(json_file, 'r') as f:
+            devices = json.load(f)
+        
+        return {
+            "status": "done",
+            "devices": devices,
+            "total_count": len(devices)
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Error loading saved scans: {str(e)}",
+            "devices": [],
+            "total_count": 0
+        }
+
+
+@app.get("/retrieve_scanned_points", response_model=ScannedPointsResponse)
+async def retrieve_scanned_points(device_address: Optional[str] = Query(None)):
+    """
+    Retrieve object properties from the JSON cache file.
+    
+    Args:
+        device_address: Optional IP address to filter points for a specific device.
+                       If not provided, returns all scanned points.
+    """
+    try:
+        from pathlib import Path
+        cache_dir = Path.home() / '.bacnet_scan_tool'
+        json_file = cache_dir / 'object_properties.json'
+        
+        if not json_file.exists():
+            return {
+                "status": "error", 
+                "error": "No scanned points found. Read some device objects first.",
+                "points": [],
+                "total_count": 0
+            }
+        
+        with open(json_file, 'r') as f:
+            all_points = json.load(f)
+        
+        # Filter by device address if provided
+        if device_address:
+            filtered_points = [
+                point for point in all_points 
+                if point.get('device_address') == device_address
+            ]
+            return {
+                "status": "done",
+                "points": filtered_points,
+                "total_count": len(filtered_points),
+                "filtered_by": device_address
+            }
+        else:
+            return {
+                "status": "done",
+                "points": all_points,
+                "total_count": len(all_points)
+            }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Error loading scanned points: {str(e)}",
+            "points": [],
+            "total_count": 0
+        }

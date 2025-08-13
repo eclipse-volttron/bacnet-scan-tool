@@ -71,3 +71,37 @@ class ObjectListNamesResponse(BaseModel):
     results: Optional[Dict[str, ObjectProperties]] = None
     pagination: Optional[PaginationInfo] = None
     error: Optional[str] = None
+
+class SavedDevice(BaseModel):
+    device_instance: str
+    device_address: str
+    vendor_id: str
+    first_discovered: str
+    last_seen: str
+    scan_count: str
+    networks_found_on: str
+
+class SavedScansResponse(BaseModel):
+    status: str
+    devices: List[SavedDevice]
+    total_count: int
+    error: Optional[str] = None
+
+class ScannedPoint(BaseModel):
+    device_address: str
+    device_object_identifier: str
+    object_id: str
+    object_name: str
+    units: str
+    present_value: str
+    object_type: str
+    first_discovered: str
+    last_updated: str
+    read_count: str
+
+class ScannedPointsResponse(BaseModel):
+    status: str
+    points: List[ScannedPoint]
+    total_count: int
+    filtered_by: Optional[str] = None
+    error: Optional[str] = None
