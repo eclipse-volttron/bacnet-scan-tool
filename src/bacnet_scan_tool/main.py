@@ -1,6 +1,11 @@
 import asyncio
+import ipaddress
 import json
+import netifaces
+import platform
+import re
 import socket
+import subprocess
 from typing import Optional, Any
 
 from fastapi import FastAPI, HTTPException, Form, Query
@@ -221,11 +226,10 @@ async def scan_subnet(
     high_id: Optional[int] = Form(None),
     enable_brute_force: Optional[bool] = Form(None),
     semaphore_limit: Optional[int] = Form(None),
-    max_duration: Optional[float] = Form(None),
-    force_fresh_scan: Optional[bool] = Form(False)
+    max_duration: Optional[float] = Form(None)
 ):
     """
-    Scan a subnet (CIDR notation, e.g. 192.168.1.0/24) for BACnet devices using hybrid Who-Is.
+    Scan a subnet (CIDR notation, e.g. 192.168.1.0/24) for BACnet devices using cache-informed scanning.
     All parameters except subnet are optional and will use backend defaults if not provided.
     
     Parameters:
@@ -236,7 +240,8 @@ async def scan_subnet(
     - enable_brute_force: Enable unicast sweep fallback (default: True)
     - semaphore_limit: Concurrency limit (default: 20)
     - max_duration: Maximum scan duration (default: 280s)
-    - force_fresh_scan: Skip cache and force fresh scan (default: False)
+    
+    Note: Scan is always real but uses cached devices as priority targets for faster discovery.
     """
     manager = app.state.bacnet_manager
     peer = app.state.bacnet_proxy_peer
@@ -273,8 +278,6 @@ async def scan_subnet(
         payload["semaphore_limit"] = semaphore_limit
     if max_duration is not None and max_duration > 0:
         payload["max_duration"] = max_duration
-    if force_fresh_scan is not None:
-        payload["force_fresh_scan"] = force_fresh_scan
     import ipaddress
     try:
         net = ipaddress.ip_network(subnet, strict=False)
@@ -338,6 +341,99 @@ async def scan_subnet(
             status="error",
             error=f"Error processing scan_ip_range response: {e}",
             ips_scanned=ips_scanned
+        )
+
+
+@app.post("/bacnet/get_cached_devices", response_model=ScanResponse)
+async def get_cached_devices(
+    subnet: Optional[str] = Form(None)
+):
+    """
+    Get cached devices without performing a network scan.
+    
+    Parameters:
+    - subnet: Optional network filter in CIDR notation (e.g. 192.168.1.0/24)
+              If provided, only returns devices found on that network
+              If not provided, returns all cached devices
+    """
+    manager = app.state.bacnet_manager
+    peer = app.state.bacnet_proxy_peer
+    if not peer:
+        return ScanResponse(
+            status="error",
+            error="Proxy not registered, cannot get cached devices.",
+            ips_scanned=0
+        )
+    
+    from protocol_proxy.ipc import ProtocolProxyMessage
+    
+    # Build payload
+    payload = {}
+    if subnet:
+        payload["network"] = subnet
+    
+    try:
+        result = await manager.send(
+            peer,
+            ProtocolProxyMessage(method_name="GET_CACHED_DEVICES",
+                                 payload=json.dumps(payload).encode('utf8'),
+                                 response_expected=True))
+        if asyncio.isfuture(result):
+            result = await result
+        
+        value = json.loads(result.decode('utf8'))
+        
+        if isinstance(value, dict) and value.get('error'):
+            return ScanResponse(
+                status="error",
+                error=value.get('error'),
+                ips_scanned=0
+            )
+
+        from .models import BACnetDevice
+        processed = []
+        for dev in value:
+            dev_out = {}
+            for k in ["pduSource", "deviceIdentifier", "maxAPDULengthAccepted", "segmentationSupported", "vendorID"]:
+                if k in dev:
+                    dev_out[k] = dev[k]
+            did = dev_out.get("deviceIdentifier")
+            if isinstance(did, (list, tuple)) and len(did) == 2:
+                dev_out["device_instance"] = did[1]
+                dev_out["deviceIdentifier"] = f"{did[0]},{did[1]}"
+            pdu_source = dev.get("pduSource")
+            if isinstance(pdu_source, str):
+                if ":" in pdu_source:
+                    dev_out["address"] = pdu_source.split(":")[0]
+                else:
+                    dev_out["address"] = pdu_source
+            else:
+                dev_out["address"] = None
+            
+            # Mark as cached
+            dev_out["_cached"] = dev.get("_cached", True)
+            dev_out["_cache_info"] = dev.get("_cache_info", {})
+            
+            processed.append(BACnetDevice(**dev_out))
+        
+        return ScanResponse(
+            status="done", 
+            devices=processed, 
+            ips_scanned=0,  # No IPs scanned for cached results
+            message=f"Retrieved {len(processed)} cached devices" + (f" for network {subnet}" if subnet else "")
+        )
+        
+    except json.JSONDecodeError as e:
+        return ScanResponse(
+            status="error",
+            error=f"Error decoding cached devices response: {e}",
+            ips_scanned=0
+        )
+    except Exception as e:
+        return ScanResponse(
+            status="error",
+            error=f"Error getting cached devices: {e}",
+            ips_scanned=0
         )
 
 

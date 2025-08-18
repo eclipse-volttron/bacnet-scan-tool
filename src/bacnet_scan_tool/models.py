@@ -30,6 +30,7 @@ class ScanResponse(BaseModel):
     status: str
     devices: Optional[List[BACnetDevice]] = None
     error: Optional[str] = None
+    message: Optional[str] = None
     ips_scanned: int
 
 class PropertyReadResponse(BaseModel):
