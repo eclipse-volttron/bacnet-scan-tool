@@ -437,35 +437,6 @@ async def get_cached_devices(
         )
 
 
-def make_jsonable(obj):
-    """
-    Recursively convert BACnet objects, enums, and tuples to JSON-serializable types.
-    """
-    import ipaddress
-    if obj is None:
-        return None
-    if isinstance(obj, (str, int, float, bool)):
-        return obj
-    if isinstance(obj, bytes):
-        return obj.decode('utf-8', errors='replace')
-    if isinstance(obj, bytearray):
-        return bytes(obj).decode('utf-8', errors='replace')
-    if isinstance(obj, dict):
-        return {make_jsonable(k): make_jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, set, tuple)):
-        return [make_jsonable(x) for x in obj]
-    if hasattr(obj, 'name') and hasattr(obj, 'value'):
-        return str(obj.name)
-    if hasattr(
-            obj,
-            '__class__') and obj.__class__.__name__.startswith('ObjectType'):
-        return str(obj)
-    if isinstance(obj, ipaddress.IPv4Address) or isinstance(
-            obj, ipaddress.IPv6Address):
-        return str(obj)
-    return str(obj)
-
-
 @app.post("/write_property")
 async def write_property(device_address: str,
                          object_identifier: str,
@@ -502,13 +473,11 @@ async def write_property(device_address: str,
     if isinstance(send_result, bytes):
         try:
             result_json = json.loads(send_result.decode('utf8'))
-            from .main import make_jsonable
-            return {"status": "done", "result": make_jsonable(result_json)}
+            return {"status": "done", "result": result_json}
         except Exception as e:
             return {"status": "error", "error": f"Could not decode response: {e}"}
-    # If dict, str, or other, ensure JSON serializable
-    from .main import make_jsonable
-    return {"status": "done", "result": make_jsonable(send_result)}
+    # If dict, str, or other, return as-is (proxy already serialized it)
+    return {"status": "done", "result": send_result}
 
 
 @app.post("/read_property", response_model=PropertyReadResponse)
@@ -608,12 +577,10 @@ async def read_device_all(device_address: str = Form(...),
     print(f"[read_device_all] Raw result bytes: {result}")
     try:
         value = json.loads(result.decode('utf8'))
-        jsonable = make_jsonable(value)
-        print(f"[read_device_all FastAPI] Returning to frontend: {jsonable}",
-              50 * "*")
-        return DevicePropertiesResponse(status="done", properties=jsonable)
+        print(f"[read_device_all FastAPI] Returning to frontend: {value}")
+        return DevicePropertiesResponse(status="done", properties=value)
     except Exception as e:
-        print(f"[read_device_all] Error decoding or serializing response: {e}")
+        print(f"[read_device_all] Error decoding response: {e}")
         return DevicePropertiesResponse(
             status="error",
             error=f"Error decoding read_device_all response: {e}"
