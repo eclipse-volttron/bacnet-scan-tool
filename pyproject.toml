@@ -24,13 +24,14 @@ pydantic = ">=2.10.6,<3.0.0"
 sqlmodel = ">=0.0.8,<1.0.0"
 click = ">=8.1.8,<9.0.0"
 uvicorn = ">=0.34.0,<0.35.0"
-protocol-proxy = { git = "https://github.com/riley206-pnnl/lib-protocol-proxy.git", rev = "bacnet-async-upgrade" }
-protocol-proxy-bacnet = { git = "https://github.com/riley206-pnnl/lib-protocol-proxy-bacnet.git", rev = "main" }
-#protocol-proxy-bacnet = { path = "../lib-protocol-proxy-bacnet" }
-#protocol-proxy = { path = "../lib-protocol-proxy" }
+#protocol-proxy = { git = "https://github.com/riley206-pnnl/lib-protocol-proxy.git", rev = "bacnet-async-upgrade" }
+#protocol-proxy-bacnet = { git = "https://github.com/riley206-pnnl/lib-protocol-proxy-bacnet.git", rev = "main" }
+protocol-proxy-bacnet = { path = "../lib-protocol-proxy-bacnet" }
+protocol-proxy = { path = "../lib-protocol-proxy" }
 bacpypes3 = "^0.0.102"
 psutil = "^7.0.0"
 gevent = "^25.5.1"
 python-multipart = "^0.0.20"
 netifaces = "^0.11.0"
 bac0 = "^2025.6.10"
+rdflib = "^6.0"
