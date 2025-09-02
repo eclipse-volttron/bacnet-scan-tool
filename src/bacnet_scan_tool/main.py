@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Form, Query
 from protocol_proxy.ipc import ProtocolProxyMessage, ProtocolProxyPeer
 from protocol_proxy.manager.asyncio import AsyncioProtocolProxyManager
 from protocol_proxy.protocol.bacnet import BACnetProxy
+from protocol_proxy.protocol.bacnet.network_discover_ping import discover_networks_for_bacnet
 
 from .models import (
     IPAddress, LocalIPResponse, ProxyResponse, ScanResponse,
@@ -662,6 +663,123 @@ async def ping_ip(ip_address: str = Form(...)):
         )
 
 
+@app.get("/discover_networks")
+async def discover_networks(verbose: bool = Query(False, description="Enable verbose output for network discovery")):
+    """
+    Discover available networks for BACnet scanning using comprehensive network analysis.
+    Returns a flattened list of unique networks with discovery method information in the summary.
+    Includes both automatically discovered networks and user-added custom networks.
+    
+    Args:
+        verbose: If True, includes additional diagnostic information in the response
+    
+    Returns:
+        JSON response containing:
+        - networks: Flattened list of unique networks ready for scanning
+        - summary: Overview including discovery methods and statistics
+    """
+
+    # TODO before doing this, call bacpypes who is router to network, if that fails, we revert to this. 
+    try:
+        # Call the network discovery function
+        discovery_results = await discover_networks_for_bacnet(verbose=verbose)
+        
+        # Load custom networks from file
+        custom_networks = []
+        try:
+            from pathlib import Path
+            cache_dir = Path.home() / '.bacnet_scan_tool'
+            custom_networks_file = cache_dir / 'custom_networks.json'
+            
+            if custom_networks_file.exists():
+                with open(custom_networks_file, 'r') as f:
+                    custom_data = json.load(f)
+                    custom_networks = custom_data.get("custom_networks", [])
+        except Exception as e:
+            if verbose:
+                print(f"Warning: Could not load custom networks: {e}")
+        
+        # Add custom networks to discovery results
+        if custom_networks:
+            discovery_results["custom_networks"] = custom_networks
+        
+        # Flatten and deduplicate networks
+        all_networks = set()
+        discovery_methods = {}
+        method_counts = {}
+        
+        for category, network_list in discovery_results.items():
+            if isinstance(network_list, list):
+                method_counts[category] = len(network_list)
+                for network in network_list:
+                    if isinstance(network, str) and '/' in network:
+                        all_networks.add(network)
+                        # Track which methods found each network
+                        if network not in discovery_methods:
+                            discovery_methods[network] = []
+                        method_label = category.replace('_', ' ').title()
+                        if method_label not in discovery_methods[network]:
+                            discovery_methods[network].append(method_label)
+        
+        # Convert to sorted list for consistent output
+        networks_list = sorted(list(all_networks))
+        
+        # Calculate summary statistics
+        total_ips = 0
+        for network in networks_list:
+            try:
+                import ipaddress
+                net = ipaddress.ip_network(network, strict=False)
+                total_ips += net.num_addresses
+            except:
+                pass
+        
+        # Create enhanced summary with discovery method information
+        summary = {
+            "total_networks_found": len(networks_list),
+            "estimated_total_ips": total_ips,
+            "discovery_methods_used": list(method_counts.keys()),
+            "networks_per_method": method_counts,
+            "custom_networks_count": len(custom_networks),
+            "discovery_successful": True,
+            "most_comprehensive_networks": [
+                network for network, methods in discovery_methods.items() 
+                if len(methods) > 1
+            ][:5]  # Top 5 networks found by multiple methods
+        }
+        
+        # Add detailed discovery info if verbose
+        if verbose:
+            summary["network_discovery_details"] = discovery_methods
+            summary["raw_discovery_results"] = discovery_results
+        
+        return {
+            "status": "done",
+            "networks": networks_list,
+            "summary": summary,
+            "message": f"Successfully discovered {len(networks_list)} unique networks using {len(method_counts)} discovery methods" + (f" (including {len(custom_networks)} custom networks)" if custom_networks else "")
+        }
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc() if verbose else str(e)
+        
+        return {
+            "status": "error",
+            "error": f"Network discovery failed: {str(e)}",
+            "error_details": error_details if verbose else None,
+            "networks": [],
+            "summary": {
+                "total_networks_found": 0,
+                "estimated_total_ips": 0,
+                "discovery_methods_used": [],
+                "networks_per_method": {},
+                "custom_networks_count": 0,
+                "discovery_successful": False
+            }
+        }
+
+
 from fastapi.responses import JSONResponse
 @app.post("/bacnet/read_object_list_names", response_model=ObjectListNamesResponse)
 async def read_object_list_names(
@@ -831,6 +949,212 @@ async def retrieve_saved_scans():
             "error": f"Error loading saved scans: {str(e)}",
             "devices": [],
             "total_count": 0
+        }
+
+
+@app.post("/networks/add")
+async def add_custom_network(network: str = Form(..., description="Network in CIDR notation (e.g., 192.168.2.0/24)")):
+    """
+    Add a custom network to the persistent list for BACnet scanning.
+    
+    Args:
+        network: Network in CIDR notation (e.g., "192.168.2.0/24")
+    
+    Returns:
+        JSON response with status and updated network list
+    """
+    try:
+        # Validate CIDR format
+        import ipaddress
+        try:
+            net = ipaddress.ip_network(network, strict=False)
+            normalized_network = str(net)  # Normalize the format
+        except ValueError as e:
+            return {
+                "status": "error",
+                "error": f"Invalid network format '{network}': {str(e)}. Use CIDR notation like '192.168.1.0/24'"
+            }
+        
+        # Set up cache file path
+        from pathlib import Path
+        cache_dir = Path.home() / '.bacnet_scan_tool'
+        cache_dir.mkdir(exist_ok=True)
+        custom_networks_file = cache_dir / 'custom_networks.json'
+        
+        # Load existing networks
+        if custom_networks_file.exists():
+            with open(custom_networks_file, 'r') as f:
+                data = json.load(f)
+        else:
+            data = {
+                "custom_networks": [],
+                "added_dates": {}
+            }
+        
+        # Check if network already exists
+        if normalized_network in data["custom_networks"]:
+            return {
+                "status": "error", 
+                "error": f"Network '{normalized_network}' already exists in custom networks",
+                "networks": data["custom_networks"]
+            }
+        
+        # Add the network
+        from datetime import datetime
+        data["custom_networks"].append(normalized_network)
+        data["added_dates"][normalized_network] = datetime.now().isoformat()
+        
+        # Save back to file
+        with open(custom_networks_file, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        return {
+            "status": "done",
+            "message": f"Successfully added network '{normalized_network}'",
+            "networks": data["custom_networks"],
+            "total_custom_networks": len(data["custom_networks"])
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Failed to add network: {str(e)}"
+        }
+
+
+@app.delete("/networks/remove")
+async def remove_custom_network(network: str = Form(..., description="Network in CIDR notation to remove")):
+    """
+    Remove a custom network from the persistent list.
+    
+    Args:
+        network: Network in CIDR notation to remove
+    
+    Returns:
+        JSON response with status and updated network list
+    """
+    try:
+        # Normalize the network format for comparison
+        import ipaddress
+        try:
+            net = ipaddress.ip_network(network, strict=False)
+            normalized_network = str(net)
+        except ValueError as e:
+            return {
+                "status": "error",
+                "error": f"Invalid network format '{network}': {str(e)}"
+            }
+        
+        # Set up cache file path
+        from pathlib import Path
+        cache_dir = Path.home() / '.bacnet_scan_tool'
+        custom_networks_file = cache_dir / 'custom_networks.json'
+        
+        # Load existing networks
+        if not custom_networks_file.exists():
+            return {
+                "status": "error",
+                "error": "No custom networks file found. Add some networks first.",
+                "networks": []
+            }
+        
+        with open(custom_networks_file, 'r') as f:
+            data = json.load(f)
+        
+        # Check if network exists
+        if normalized_network not in data["custom_networks"]:
+            return {
+                "status": "error",
+                "error": f"Network '{normalized_network}' not found in custom networks",
+                "networks": data["custom_networks"]
+            }
+        
+        # Remove the network
+        data["custom_networks"].remove(normalized_network)
+        if normalized_network in data["added_dates"]:
+            del data["added_dates"][normalized_network]
+        
+        # Save back to file
+        with open(custom_networks_file, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        return {
+            "status": "done",
+            "message": f"Successfully removed network '{normalized_network}'",
+            "networks": data["custom_networks"],
+            "total_custom_networks": len(data["custom_networks"])
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Failed to remove network: {str(e)}"
+        }
+
+
+@app.get("/networks/custom")
+async def get_custom_networks():
+    """
+    Get the list of custom networks with metadata.
+    
+    Returns:
+        JSON response with custom networks and their addition dates
+    """
+    try:
+        from pathlib import Path
+        cache_dir = Path.home() / '.bacnet_scan_tool'
+        custom_networks_file = cache_dir / 'custom_networks.json'
+        
+        if not custom_networks_file.exists():
+            return {
+                "status": "done",
+                "networks": [],
+                "network_details": {},
+                "total_custom_networks": 0,
+                "message": "No custom networks configured"
+            }
+        
+        with open(custom_networks_file, 'r') as f:
+            data = json.load(f)
+        
+        # Calculate estimated IPs for each network
+        network_details = {}
+        total_ips = 0
+        
+        for network in data["custom_networks"]:
+            try:
+                import ipaddress
+                net = ipaddress.ip_network(network, strict=False)
+                estimated_ips = net.num_addresses
+                total_ips += estimated_ips
+                
+                network_details[network] = {
+                    "added_date": data["added_dates"].get(network, "Unknown"),
+                    "estimated_ips": estimated_ips,
+                    "network_address": str(net.network_address),
+                    "broadcast_address": str(net.broadcast_address),
+                    "prefix_length": net.prefixlen
+                }
+            except ValueError:
+                network_details[network] = {
+                    "added_date": data["added_dates"].get(network, "Unknown"),
+                    "estimated_ips": 0,
+                    "error": "Invalid network format"
+                }
+        
+        return {
+            "status": "done",
+            "networks": data["custom_networks"],
+            "network_details": network_details,
+            "total_custom_networks": len(data["custom_networks"]),
+            "estimated_total_ips": total_ips,
+            "message": f"Found {len(data['custom_networks'])} custom networks"
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Failed to get custom networks: {str(e)}"
         }
 
 
