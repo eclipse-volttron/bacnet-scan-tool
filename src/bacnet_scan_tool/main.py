@@ -287,92 +287,92 @@ async def scan_subnet(subnet: str = Form(...),
             ips_scanned=ips_scanned)
 
 
-@app.post("/bacnet/get_cached_devices", response_model=ScanResponse)
-async def get_cached_devices(subnet: Optional[str] = Form(None)):
-    """
-    Get cached devices without performing a network scan.
+# @app.post("/bacnet/get_cached_devices", response_model=ScanResponse)
+# async def get_cached_devices(subnet: Optional[str] = Form(None)):
+#     """
+#     Get cached devices without performing a network scan.
 
-    Parameters:
-    - subnet: Optional network filter in CIDR notation (e.g. 192.168.1.0/24)
-              If provided, only returns devices found on that network
-              If not provided, returns all cached devices
-    """
-    manager = app.state.bacnet_manager
-    peer = app.state.bacnet_proxy_peer
-    if not peer:
-        return ScanResponse(
-            status="error",
-            error="Proxy not registered, cannot get cached devices.",
-            ips_scanned=0)
+#     Parameters:
+#     - subnet: Optional network filter in CIDR notation (e.g. 192.168.1.0/24)
+#               If provided, only returns devices found on that network
+#               If not provided, returns all cached devices
+#     """
+#     manager = app.state.bacnet_manager
+#     peer = app.state.bacnet_proxy_peer
+#     if not peer:
+#         return ScanResponse(
+#             status="error",
+#             error="Proxy not registered, cannot get cached devices.",
+#             ips_scanned=0)
 
-    from protocol_proxy.ipc import ProtocolProxyMessage
+#     from protocol_proxy.ipc import ProtocolProxyMessage
 
-    # Build payload
-    payload = {}
-    if subnet:
-        payload["network"] = subnet
+#     # Build payload
+#     payload = {}
+#     if subnet:
+#         payload["network"] = subnet
 
-    try:
-        result = await manager.send(
-            peer,
-            ProtocolProxyMessage(method_name="GET_CACHED_DEVICES",
-                                 payload=json.dumps(payload).encode('utf8'),
-                                 response_expected=True))
-        if asyncio.isfuture(result):
-            result = await result
+#     try:
+#         result = await manager.send(
+#             peer,
+#             ProtocolProxyMessage(method_name="GET_CACHED_DEVICES",
+#                                  payload=json.dumps(payload).encode('utf8'),
+#                                  response_expected=True))
+#         if asyncio.isfuture(result):
+#             result = await result
 
-        value = json.loads(result.decode('utf8'))
+#         value = json.loads(result.decode('utf8'))
 
-        if isinstance(value, dict) and value.get('error'):
-            return ScanResponse(status="error",
-                                error=value.get('error'),
-                                ips_scanned=0)
+#         if isinstance(value, dict) and value.get('error'):
+#             return ScanResponse(status="error",
+#                                 error=value.get('error'),
+#                                 ips_scanned=0)
 
-        from .models import BACnetDevice
-        processed = []
-        for dev in value:
-            dev_out = {}
-            for k in [
-                    "pduSource", "deviceIdentifier", "maxAPDULengthAccepted",
-                    "segmentationSupported", "vendorID"
-            ]:
-                if k in dev:
-                    dev_out[k] = dev[k]
-            did = dev_out.get("deviceIdentifier")
-            if isinstance(did, (list, tuple)) and len(did) == 2:
-                dev_out["device_instance"] = did[1]
-                dev_out["deviceIdentifier"] = f"{did[0]},{did[1]}"
-            pdu_source = dev.get("pduSource")
-            if isinstance(pdu_source, str):
-                if ":" in pdu_source:
-                    dev_out["address"] = pdu_source.split(":")[0]
-                else:
-                    dev_out["address"] = pdu_source
-            else:
-                dev_out["address"] = None
+#         from .models import BACnetDevice
+#         processed = []
+#         for dev in value:
+#             dev_out = {}
+#             for k in [
+#                     "pduSource", "deviceIdentifier", "maxAPDULengthAccepted",
+#                     "segmentationSupported", "vendorID"
+#             ]:
+#                 if k in dev:
+#                     dev_out[k] = dev[k]
+#             did = dev_out.get("deviceIdentifier")
+#             if isinstance(did, (list, tuple)) and len(did) == 2:
+#                 dev_out["device_instance"] = did[1]
+#                 dev_out["deviceIdentifier"] = f"{did[0]},{did[1]}"
+#             pdu_source = dev.get("pduSource")
+#             if isinstance(pdu_source, str):
+#                 if ":" in pdu_source:
+#                     dev_out["address"] = pdu_source.split(":")[0]
+#                 else:
+#                     dev_out["address"] = pdu_source
+#             else:
+#                 dev_out["address"] = None
 
-            # Mark as cached
-            dev_out["_cached"] = dev.get("_cached", True)
-            dev_out["_cache_info"] = dev.get("_cache_info", {})
+#             # Mark as cached
+#             dev_out["_cached"] = dev.get("_cached", True)
+#             dev_out["_cache_info"] = dev.get("_cache_info", {})
 
-            processed.append(BACnetDevice(**dev_out))
+#             processed.append(BACnetDevice(**dev_out))
 
-        return ScanResponse(
-            status="done",
-            devices=processed,
-            ips_scanned=0,  # No IPs scanned for cached results
-            message=f"Retrieved {len(processed)} cached devices" +
-            (f" for network {subnet}" if subnet else ""))
+#         return ScanResponse(
+#             status="done",
+#             devices=processed,
+#             ips_scanned=0,  # No IPs scanned for cached results
+#             message=f"Retrieved {len(processed)} cached devices" +
+#             (f" for network {subnet}" if subnet else ""))
 
-    except json.JSONDecodeError as e:
-        return ScanResponse(
-            status="error",
-            error=f"Error decoding cached devices response: {e}",
-            ips_scanned=0)
-    except Exception as e:
-        return ScanResponse(status="error",
-                            error=f"Error getting cached devices: {e}",
-                            ips_scanned=0)
+#     except json.JSONDecodeError as e:
+#         return ScanResponse(
+#             status="error",
+#             error=f"Error decoding cached devices response: {e}",
+#             ips_scanned=0)
+#     except Exception as e:
+#         return ScanResponse(status="error",
+#                             error=f"Error getting cached devices: {e}",
+#                             ips_scanned=0)
 
 
 @app.post("/write_property")
