@@ -21,21 +21,137 @@ import platform
 import asyncio
 import concurrent.futures
 from typing import Dict, Set, List, Tuple
+import sys
+
+
+# ------------------------------------------------------------
+# Safe printing (avoid BrokenPipeError when piping output, e.g. | head)
+# ------------------------------------------------------------
+def safe_print(*args, **kwargs):
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        try:
+            sys.stderr.close()
+        except Exception:
+            pass
+        # Silently ignore further prints
+        pass
+
+
+# ------------------------------------------------------------
+# Environment / Platform Helpers
+# ------------------------------------------------------------
+def is_wsl_environment() -> bool:
+    """Return True if running inside Windows Subsystem for Linux."""
+    try:
+        rel = platform.release().lower()
+        uname_rel = platform.uname().release.lower()
+        return 'microsoft' in rel or 'microsoft' in uname_rel or 'wsl' in rel or 'wsl' in uname_rel
+    except Exception:
+        return False
+
+
+def is_native_linux() -> bool:
+    """Return True if running on native (non-WSL) Linux."""
+    return platform.system().lower() == 'linux' and not is_wsl_environment()
+
+
+def is_windows_or_wsl() -> bool:
+    """Return True if running on Windows or WSL."""
+    return platform.system().lower() == 'windows' or is_wsl_environment()
+
+
+def get_linux_routed_networks(
+        verbose: bool = True) -> Dict[str, Dict[str, str]]:
+    """Parse Linux routing table (ip route show) to enumerate reachable IPv4 networks."""
+    routed_networks: Dict[str, Dict[str, str]] = {}
+    try:
+        cmd = ["ip", "-4", "route", "show"]
+        output = subprocess.check_output(cmd, text=True, errors="ignore")
+        if verbose:
+            safe_print(
+                "[get_linux_routed_networks] Parsing Linux routing table for reachable networks..."
+            )
+
+        for line in output.splitlines():
+            line = line.strip()
+            if not line or line.startswith('default'):
+                # skip default route here
+                continue
+            tokens = line.split()
+            if not tokens:
+                continue
+
+            # First token should be a CIDR or a bare network (sometimes without /mask -> treated as host)
+            dest = tokens[0]
+            if '/' not in dest:
+                # some lines like "broadcast 192.168.1.255 dev eth0"; skip those
+                continue
+
+            try:
+                net = ipaddress.IPv4Network(dest, strict=False)
+            except Exception:
+                continue
+
+            if (net.is_loopback or net.is_link_local or net.is_multicast
+                    or net.prefixlen < 8):
+                continue
+
+            # Get interface after 'dev'
+            interface = 'unknown'
+            if 'dev' in tokens:
+                try:
+                    interface = tokens[tokens.index('dev') + 1]
+                except Exception:
+                    pass
+
+            # gateway (via) if present
+            gateway = 'On-link'
+            if 'via' in tokens:
+                try:
+                    gateway = tokens[tokens.index('via') + 1]
+                except Exception:
+                    pass
+
+            network_type = 'private' if net.is_private else 'routed'
+
+            routed_networks[str(net)] = {
+                'gateway': gateway,
+                'interface': interface,
+                'method': 'routing_table',
+                'type': network_type
+            }
+            if verbose:
+                safe_print(
+                    f"[get_linux_routed_networks] Found {network_type} network: {net} via {gateway} dev {interface}"
+                )
+
+    except Exception as e:
+        if verbose:
+            safe_print(
+                f"[get_linux_routed_networks] Error running 'ip route': {e}")
+
+    if verbose:
+        safe_print(
+            f"[get_linux_routed_networks] Found {len(routed_networks)} reachable networks"
+        )
+    return routed_networks
 
 
 def get_windows_routed_networks(
         verbose: bool = True) -> Dict[str, Dict[str, str]]:
+    """Return routed networks for Windows / (underlying) Windows when in WSL.
+
+    If native Linux (not WSL), we call the Linux parser instead.
     """
-    Returns a dictionary of routed IPv4 networks on Windows from netstat.exe -r.
-    This includes all networks your system can reach, not just local ones.
-    """
+    if is_native_linux():
+        return get_linux_routed_networks(verbose)
+
+    # If truly Windows / WSL proceed with netstat parsing
     routed_networks = {}
     try:
-        # Detect if we're in WSL
-        is_wsl = "microsoft" in platform.release().lower(
-        ) or "WSL" in platform.uname().release
-
-        if is_wsl:
+        if is_wsl_environment():
             # Use Windows netstat from WSL
             cmd = ["/mnt/c/Windows/System32/netstat.exe", "-r"]
         else:
@@ -43,7 +159,7 @@ def get_windows_routed_networks(
 
         output = subprocess.check_output(cmd, text=True, errors="ignore")
 
-        print(
+        safe_print(
             f"[get_windows_routed_networks] Parsing routing table for reachable networks..."
         )
 
@@ -88,111 +204,145 @@ def get_windows_routed_networks(
                             "type": network_type
                         }
                         if verbose:
-                            print(
+                            safe_print(
                                 f"[get_windows_routed_networks] Found {network_type} network: {net} via {gateway}"
                             )
 
                 except Exception as e:
                     if verbose:
-                        print(
+                        safe_print(
                             f"[get_windows_routed_networks] Error parsing {dest}/{netmask}: {e}"
                         )
 
     except Exception as e:
         if verbose:
-            print(f"[get_windows_routed_networks] Error running netstat: {e}")
+            safe_print(
+                f"[get_windows_routed_networks] Error running netstat: {e}")
 
     if verbose:
-        print(
+        safe_print(
             f"[get_windows_routed_networks] Found {len(routed_networks)} reachable networks"
         )
     return routed_networks
 
 
 def get_network_interfaces() -> Dict[str, Dict[str, str]]:
-    """
-    Get network interfaces and their associated networks that we can reach.
-    This helps discover networks beyond just the routing table.
+    """Get network interfaces and their networks.
+
+    WSL: always query Windows ipconfig.exe so we operate on Windows networking view.
+    Windows: ipconfig
+    Native Linux: ip -4 addr show
     """
     interface_networks = {}
 
     try:
-        # Detect if we're in WSL
-        is_wsl = "microsoft" in platform.release().lower(
-        ) or "WSL" in platform.uname().release
+        if is_windows_or_wsl():
+            # Force Windows ipconfig when in WSL
+            if is_wsl_environment():
+                cmd = ["/mnt/c/Windows/System32/ipconfig.exe", "/all"]
+            else:
+                cmd = ["ipconfig", "/all"]
 
-        if is_wsl:
-            # Use Windows ipconfig from WSL
-            cmd = ["/mnt/c/Windows/System32/ipconfig.exe", "/all"]
-        else:
-            cmd = ["ipconfig", "/all"]
+            output = subprocess.check_output(cmd, text=True, errors="ignore")
+            safe_print(
+                f"[get_network_interfaces] Parsing Windows/WSL network interfaces..."
+            )
 
-        output = subprocess.check_output(cmd, text=True, errors="ignore")
+            current_interface = None
+            current_ip = None
 
-        print(f"[get_network_interfaces] Parsing network interfaces...")
+            for line in output.splitlines():
+                line = line.strip()
+                if "adapter" in line.lower() and ":" in line:
+                    current_interface = line
+                    current_ip = None
+                    continue
 
-        current_interface = None
-        current_ip = None
-
-        for line in output.splitlines():
-            line = line.strip()
-
-            # Detect interface names
-            if "adapter" in line.lower() and ":" in line:
-                current_interface = line
-                current_ip = None  # Reset IP for new interface
-                continue
-
-            # Look for IPv4 addresses
-            if "IPv4 Address" in line or "IP Address" in line:
-                # Extract IP address - handle both formats
-                ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-                if ip_match:
-                    current_ip = ip_match.group(1)
-                    print(
-                        f"[get_network_interfaces] Found IP: {current_ip} on {current_interface}"
-                    )
-
-            # Look for subnet mask - this should come after the IP address
-            if "Subnet Mask" in line and current_ip:
-                mask_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-                if mask_match:
-                    subnet_mask = mask_match.group(1)
-
-                    try:
-                        # Create network from IP and mask
-                        network = ipaddress.IPv4Network(
-                            f"{current_ip}/{subnet_mask}", strict=False)
-
-                        if (not network.is_loopback
-                                and not network.is_link_local
-                                and network.prefixlen >= 8
-                                and network.prefixlen
-                                <= 30):  # Reasonable network sizes
-
-                            interface_networks[str(network)] = {
-                                "interface": current_interface or "Unknown",
-                                "ip": current_ip,
-                                "subnet_mask": subnet_mask,
-                                "method": "interface_scan",
-                                "type": "local_interface"
-                            }
-                            print(
-                                f"[get_network_interfaces] ✓ Found LOCAL network: {network} (IP: {current_ip}) on {current_interface}"
-                            )
-
-                    except Exception as e:
-                        print(
-                            f"[get_network_interfaces] Error creating network from {current_ip}/{subnet_mask}: {e}"
+                if "IPv4 Address" in line or "IP Address" in line:
+                    ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+                    if ip_match:
+                        current_ip = ip_match.group(1)
+                        safe_print(
+                            f"[get_network_interfaces] Found IP: {current_ip} on {current_interface}"
                         )
 
-                    # Reset for next interface
-                    current_ip = None
+                if "Subnet Mask" in line and current_ip:
+                    mask_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+                    if mask_match:
+                        subnet_mask = mask_match.group(1)
+                        try:
+                            network = ipaddress.IPv4Network(
+                                f"{current_ip}/{subnet_mask}", strict=False)
+                            if (not network.is_loopback
+                                    and not network.is_link_local
+                                    and 8 <= network.prefixlen <= 30):
+                                interface_networks[str(network)] = {
+                                    'interface': current_interface
+                                    or 'Unknown',
+                                    'ip': current_ip,
+                                    'subnet_mask': subnet_mask,
+                                    'method': 'interface_scan',
+                                    'type': 'local_interface'
+                                }
+                                safe_print(
+                                    f"[get_network_interfaces] ✓ Found LOCAL network: {network} (IP: {current_ip}) on {current_interface}"
+                                )
+                        except Exception as e:
+                            safe_print(
+                                f"[get_network_interfaces] Error creating network from {current_ip}/{subnet_mask}: {e}"
+                            )
+                        current_ip = None
+        else:
+            # Native Linux path using `ip -4 addr show`
+            cmd = ["ip", "-4", "addr", "show"]
+            output = subprocess.check_output(cmd, text=True, errors="ignore")
+            safe_print(
+                f"[get_network_interfaces] Parsing Linux network interfaces..."
+            )
+
+            current_interface = None
+            for line in output.splitlines():
+                if not line.strip():
+                    continue
+
+                # Interface header line: '2: enp3s0: <...>'
+                m = re.match(r'\d+:\s+([^:]+):', line)
+                if m:
+                    current_interface = m.group(1)
+                    continue
+
+                # inet line example: '    inet 192.168.1.116/24 brd 192.168.1.255 scope global dynamic ...'
+                if 'inet ' in line and current_interface:
+                    m = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)', line)
+                    if not m:
+                        continue
+                    ip_str, prefix_len = m.group(1), int(m.group(2))
+                    try:
+                        iface = ipaddress.IPv4Interface(
+                            f"{ip_str}/{prefix_len}")
+                        net = iface.network
+                        if (not net.is_loopback and not net.is_link_local
+                                and 8 <= net.prefixlen <= 30):
+                            interface_networks[str(net)] = {
+                                'interface': current_interface,
+                                'ip': ip_str,
+                                'subnet_mask': str(net.netmask),
+                                'method': 'interface_scan',
+                                'type': 'local_interface'
+                            }
+                            safe_print(
+                                f"[get_network_interfaces] ✓ Found LOCAL network: {net} (IP: {ip_str}) on {current_interface}"
+                            )
+                    except Exception as e:
+                        safe_print(
+                            f"[get_network_interfaces] Error parsing interface {current_interface} inet {ip_str}/{prefix_len}: {e}"
+                        )
 
     except Exception as e:
-        print(f"[get_network_interfaces] Error running ipconfig: {e}")
+        safe_print(
+            f"[get_network_interfaces] Error enumerating interfaces: {e}")
 
-    print(
+    safe_print(
         f"[get_network_interfaces] Found {len(interface_networks)} interface networks"
     )
     return interface_networks
@@ -205,7 +355,8 @@ def discover_adjacent_networks(known_networks: Dict[str, Dict]) -> Set[str]:
     """
     adjacent_networks = set()
 
-    print(f"[discover_adjacent_networks] Looking for adjacent networks...")
+    safe_print(
+        f"[discover_adjacent_networks] Looking for adjacent networks...")
 
     for network_str, details in known_networks.items():
         try:
@@ -227,7 +378,7 @@ def discover_adjacent_networks(known_networks: Dict[str, Dict]) -> Set[str]:
                     if 0 <= new_subnet <= 255:
                         adjacent_net = f"{parts[0]}.{parts[1]}.{new_subnet}.0/24"
                         adjacent_networks.add(adjacent_net)
-                        print(
+                        safe_print(
                             f"[discover_adjacent_networks] Added adjacent network: {adjacent_net}"
                         )
 
@@ -244,18 +395,18 @@ def discover_adjacent_networks(known_networks: Dict[str, Dict]) -> Set[str]:
                         test_net = ipaddress.IPv4Network(subnet_net)
                         if test_net.subnet_of(network):
                             adjacent_networks.add(subnet_net)
-                            print(
+                            safe_print(
                                 f"[discover_adjacent_networks] Added subnet within {network}: {subnet_net}"
                             )
                     except:
                         pass
 
         except Exception as e:
-            print(
+            safe_print(
                 f"[discover_adjacent_networks] Error processing {network_str}: {e}"
             )
 
-    print(
+    safe_print(
         f"[discover_adjacent_networks] Found {len(adjacent_networks)} adjacent networks"
     )
     return adjacent_networks
@@ -268,13 +419,9 @@ def get_arp_table_ips() -> Set[str]:
     """
     ips = set()
     try:
-        # Detect WSL
-        is_wsl = "microsoft" in platform.release().lower(
-        ) or "WSL" in platform.uname().release
-
-        if platform.system() == "Windows" or is_wsl:
+        if is_windows_or_wsl():
             # Use Windows arp.exe from WSL or Windows
-            if is_wsl:
+            if is_wsl_environment():
                 arp_cmd = ["/mnt/c/Windows/System32/arp.exe", "-a"]
             else:
                 arp_cmd = ["arp", "-a"]
@@ -282,53 +429,48 @@ def get_arp_table_ips() -> Set[str]:
             arp_output = subprocess.check_output(arp_cmd,
                                                  text=True,
                                                  errors="ignore")
-
-            print(f"[get_arp_table_ips] Parsing Windows ARP table...")
+            safe_print(f"[get_arp_table_ips] Parsing Windows ARP table...")
 
             for line in arp_output.splitlines():
-                # Windows ARP format: "  192.168.1.1          00-11-22-33-44-55     dynamic"
                 parts = line.strip().split()
                 if len(parts) >= 1 and "." in parts[0]:
                     ip = parts[0].strip()
                     try:
-                        # Validate it's a proper IPv4 address
                         ip_addr = ipaddress.IPv4Address(ip)
-                        # Only include private IPs, exclude broadcast and special addresses
                         if (ip_addr.is_private
                                 and not str(ip_addr).endswith('.255')
                                 and str(ip_addr) != '255.255.255.255'):
                             ips.add(ip)
-                            print(f"[get_arp_table_ips] Found ARP entry: {ip}")
+                            safe_print(
+                                f"[get_arp_table_ips] Found ARP entry: {ip}")
                     except Exception:
                         pass
         else:
-            # Linux ip neigh command
-            arp_output = subprocess.check_output(["ip", "neigh"],
+            # Native Linux ip neigh
+            arp_output = subprocess.check_output(["ip", "-4", "neigh"],
                                                  text=True,
                                                  errors="ignore")
-
-            print(f"[get_arp_table_ips] Parsing Linux neighbor table...")
-
+            safe_print(f"[get_arp_table_ips] Parsing Linux neighbor table...")
             for line in arp_output.splitlines():
                 parts = line.split()
-                if len(parts) >= 1:
-                    ip = parts[0]
-                    try:
-                        ip_addr = ipaddress.IPv4Address(ip)
-                        if (ip_addr.is_private
-                                and not str(ip_addr).endswith('.255')
-                                and str(ip_addr) != '255.255.255.255'):
-                            ips.add(ip)
-                            print(
-                                f"[get_arp_table_ips] Found neighbor entry: {ip}"
-                            )
-                    except Exception:
-                        pass
+                if not parts:
+                    continue
+                ip = parts[0]
+                try:
+                    ip_addr = ipaddress.IPv4Address(ip)
+                    if (ip_addr.is_private
+                            and not str(ip_addr).endswith('.255')
+                            and str(ip_addr) != '255.255.255.255'):
+                        ips.add(ip)
+                        safe_print(
+                            f"[get_arp_table_ips] Found neighbor entry: {ip}")
+                except Exception:
+                    pass
 
     except Exception as e:
-        print(f"[get_arp_table_ips] ARP table scan failed: {e}")
+        safe_print(f"[get_arp_table_ips] ARP table scan failed: {e}")
 
-    print(f"[get_arp_table_ips] Found {len(ips)} unique IPs in ARP table")
+    safe_print(f"[get_arp_table_ips] Found {len(ips)} unique IPs in ARP table")
     return ips
 
 
@@ -348,7 +490,8 @@ def get_common_networks() -> Set[str]:
         "172.16.0.0/24",
         "172.16.1.0/24",
     }
-    print(f"[get_common_networks] Using {len(common)} common private networks")
+    safe_print(
+        f"[get_common_networks] Using {len(common)} common private networks")
     return common
 
 
@@ -358,10 +501,15 @@ def ping_ip(ip: str, timeout: int = 2) -> Tuple[str, bool, str]:
     Returns (ip, success, output/error)
     """
     try:
-        # Use ping command appropriate for the platform
-        if platform.system().lower() == "windows":
-            cmd = ["ping", "-n", "1", "-w", str(timeout * 1000), ip]
+        # Use Windows ping when on Windows or WSL so we query underlying Windows stack in WSL
+        if platform.system().lower() == "windows" or is_wsl_environment():
+            if is_wsl_environment():
+                windows_ping = "/mnt/c/Windows/System32/ping.exe"
+                cmd = [windows_ping, "-n", "1", "-w", str(timeout * 1000), ip]
+            else:
+                cmd = ["ping", "-n", "1", "-w", str(timeout * 1000), ip]
         else:
+            # Native Linux
             cmd = ["ping", "-c", "1", "-W", str(timeout), ip]
 
         result = subprocess.run(cmd,
@@ -388,7 +536,7 @@ async def ping_multiple_ips(ips: List[str],
     """
     results = {}
 
-    print(
+    safe_print(
         f"[ping_multiple_ips] Pinging {len(ips)} IPs with {max_workers} workers..."
     )
 
@@ -403,9 +551,9 @@ async def ping_multiple_ips(ips: List[str],
             results[ip] = (success, message)
 
             if success:
-                print(f"[ping_multiple_ips] ✓ {ip} - {message}")
+                safe_print(f"[ping_multiple_ips] ✓ {ip} - {message}")
             else:
-                print(f"[ping_multiple_ips] ✗ {ip} - {message}")
+                safe_print(f"[ping_multiple_ips] ✗ {ip} - {message}")
 
     return results
 
@@ -429,7 +577,7 @@ def extract_ips_from_networks(networks: Set[str],
 
             # For larger networks, just scan potential gateways (.1 and .254)
             if network.num_addresses > max_ips_per_network * 2:
-                print(
+                safe_print(
                     f"[extract_ips_from_networks] Scanning gateway IPs (.1, .254) for large network {network}"
                 )
 
@@ -441,7 +589,7 @@ def extract_ips_from_networks(networks: Set[str],
                 gateway_1 = f"{network_parts[0]}.{network_parts[1]}.{network_parts[2]}.1"
                 if ipaddress.IPv4Address(gateway_1) in network:
                     all_ips.append(gateway_1)
-                    print(
+                    safe_print(
                         f"[extract_ips_from_networks] Added potential gateway: {gateway_1}"
                     )
 
@@ -449,20 +597,20 @@ def extract_ips_from_networks(networks: Set[str],
                 gateway_254 = f"{network_parts[0]}.{network_parts[1]}.{network_parts[2]}.254"
                 if ipaddress.IPv4Address(gateway_254) in network:
                     all_ips.append(gateway_254)
-                    print(
+                    safe_print(
                         f"[extract_ips_from_networks] Added potential gateway: {gateway_254}"
                     )
 
             else:
                 # Small network, add all host IPs
-                print(
+                safe_print(
                     f"[extract_ips_from_networks] Adding all {network.num_addresses-2} IPs from {network}"
                 )
                 for ip in network.hosts():
                     all_ips.append(str(ip))
 
         except Exception as e:
-            print(
+            safe_print(
                 f"[extract_ips_from_networks] Error processing network {network_str}: {e}"
             )
 
@@ -481,27 +629,27 @@ async def discover_networks_for_bacnet(
         Dict with 'responsive_networks' and 'responsive_ips' keys
     """
     if verbose:
-        print("=== Network Discovery for BACnet Scanning ===\n")
+        safe_print("=== Network Discovery for BACnet Scanning ===\n")
 
-    # Method 1: Get networks from Windows routing table (all reachable networks)
+    # Method 1: Get networks from routing table (Windows/WSL via netstat, Linux via ip route)
     if verbose:
-        print(
-            "1. Discovering reachable networks from Windows routing table...")
+        safe_print(
+            "1. Discovering reachable networks from system routing table...")
     routed_networks = get_windows_routed_networks(verbose)
 
     # Method 2: Get networks from network interfaces
     if verbose:
-        print("\n2. Discovering networks from network interfaces...")
+        safe_print("\n2. Discovering networks from network interfaces...")
     interface_networks = get_network_interfaces()
 
     # Method 3: Get IPs from ARP table (active devices)
     if verbose:
-        print("\n3. Discovering active IPs from ARP table...")
+        safe_print("\n3. Discovering active IPs from ARP table...")
     arp_ips = get_arp_table_ips()
 
     # Method 4: Discover adjacent/neighboring networks
     if verbose:
-        print("\n4. Discovering adjacent networks...")
+        safe_print("\n4. Discovering adjacent networks...")
     all_known_networks = {**routed_networks, **interface_networks}
     adjacent_networks_set = discover_adjacent_networks(all_known_networks)
     adjacent_networks = {
@@ -514,7 +662,7 @@ async def discover_networks_for_bacnet(
 
     # Method 5: Add some common private networks as fallback
     if verbose:
-        print("\n5. Adding common private networks as fallback...")
+        safe_print("\n5. Adding common private networks as fallback...")
     common_networks_set = get_common_networks()
     common_networks = {
         net: {
@@ -533,11 +681,11 @@ async def discover_networks_for_bacnet(
     }
 
     if verbose:
-        print(f"\nTotal unique networks found: {len(all_networks)}")
+        safe_print(f"\nTotal unique networks found: {len(all_networks)}")
 
     # Extract IPs from networks for gateway scanning
     if verbose:
-        print(f"\n6. Extracting gateway IPs from discovered networks...")
+        safe_print(f"\n6. Extracting gateway IPs from discovered networks...")
     network_ips = extract_ips_from_networks(set(all_networks.keys()),
                                             max_ips_per_network=50)
 
@@ -545,7 +693,8 @@ async def discover_networks_for_bacnet(
     all_ips_to_ping = list(set(list(arp_ips) + network_ips))
 
     if verbose:
-        print(f"\nPinging {len(all_ips_to_ping)} potential gateway IPs...")
+        safe_print(
+            f"\nPinging {len(all_ips_to_ping)} potential gateway IPs...")
 
     # Ping all discovered IPs
     ping_results = await ping_multiple_ips(all_ips_to_ping)
@@ -578,21 +727,21 @@ async def discover_networks_for_bacnet(
             most_specific = max(candidate_networks, key=lambda n: n.prefixlen)
             responsive_networks.add(str(most_specific))
             if verbose:
-                print(
+                safe_print(
                     f"[discover_networks_for_bacnet] IP {ip} found in {len(candidate_networks)} networks, chose most specific: {most_specific}"
                 )
 
     if verbose:
-        print(f"\n=== DISCOVERY RESULTS ===")
-        print(
-            f"Responsive networks for BACnet scanning: {len(responsive_networks)}"
+        safe_print(f"\n=== DISCOVERY RESULTS ===")
+        safe_print(
+            f"Responsive networks for BACNET scanning: {len(responsive_networks)}"
         )
         for net in sorted(responsive_networks):
-            print(f"   - {net}")
-        print(f"Responsive IPs found: {len(responsive_ips)}")
+            safe_print(f"   - {net}")
+        safe_print(f"Responsive IPs found: {len(responsive_ips)}")
         for ip in sorted(responsive_ips,
                          key=lambda x: ipaddress.IPv4Address(x)):
-            print(f"   - {ip}")
+            safe_print(f"   - {ip}")
 
     return {
         'responsive_networks':
@@ -607,9 +756,9 @@ async def main():
     Main function for standalone testing - shows verbose output.
     """
     results = await discover_networks_for_bacnet(verbose=True)
-    print(f"\n=== FINAL RESULTS FOR BACNET SCANNING ===")
-    print(f"Networks to scan: {results['responsive_networks']}")
-    print(f"Responsive IPs: {results['responsive_ips']}")
+    safe_print(f"\n=== FINAL RESULTS FOR BACNET SCANNING ===")
+    safe_print(f"Networks to scan: {results['responsive_networks']}")
+    safe_print(f"Responsive IPs: {results['responsive_ips']}")
 
 
 if __name__ == "__main__":
