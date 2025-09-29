@@ -731,7 +731,7 @@ async def read_object_list_names(device_address: str = Form(...),
                                  device_object_identifier: str = Form(...),
                                  page: int = Form(1),
                                  page_size: int = Form(100),
-                                 force_fresh_read: bool = Form(False)):
+                                 force_fresh_read: bool = Form(True)):
     """
     Reads the object-list from a device, then reads object-name and units for each object in the list.
     Returns a paginated dict mapping object-identifier to ObjectInfo (containing object-name and units).
