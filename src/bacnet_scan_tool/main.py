@@ -555,7 +555,26 @@ async def who_is(device_instance_low: int = Form(...),
         result = await result
     try:
         value = json.loads(result.decode('utf8'))
-        return WhoIsResponse(status="done", devices=value)
+        
+        # Handle different response formats
+        devices_list = None
+        if isinstance(value, dict):
+            if 'result' in value:
+                # Wrapped format: {'result': [...], 'error': {}}
+                devices_list = value['result']
+            elif 'error' in value and value.get('error'):
+                # Error format: {'error': 'some error message'}
+                return WhoIsResponse(status="error", error=str(value['error']))
+            else:
+                # Assume the dict itself contains device info - convert to list
+                devices_list = [value]
+        elif isinstance(value, list):
+            # Direct list format: [...] 
+            devices_list = value
+        else:
+            devices_list = []
+            
+        return WhoIsResponse(status="done", devices=devices_list)
     except Exception as e:
         return WhoIsResponse(status="error",
                              error=f"Error decoding who_is response: {e}")
