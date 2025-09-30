@@ -398,7 +398,7 @@ def discover_adjacent_networks(known_networks: Dict[str, Dict]) -> Set[str]:
                             safe_print(
                                 f"[discover_adjacent_networks] Added subnet within {network}: {subnet_net}"
                             )
-                    except:
+                    except Exception:
                         pass
 
         except Exception as e:
