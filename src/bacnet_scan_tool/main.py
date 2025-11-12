@@ -31,18 +31,31 @@ async def start_proxy(local_device_address: Optional[str] = Form(None)):
     Returns status and address.
     """
     try:
+        print(f"[start_proxy] Received local_device_address: {local_device_address}")
         if not local_device_address:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 s.connect(("8.8.8.8", 80))
                 local_device_address = s.getsockname()[0]
                 s.close()
-            except Exception:
+                print(f"[start_proxy] Auto-detected IP: {local_device_address}")
+            except Exception as e:
+                print(f"[start_proxy] Auto-detection failed: {e}")
                 return ProxyResponse(
                     status="error",
-                    error=
-                    "Could not auto-detect local IP address. Please specify manually."
+                    error=f"Could not auto-detect local IP address. Please specify manually. Error: {str(e)}"
                 )
+        
+        # Validate we have a valid IP address
+        if not local_device_address:
+            print("[start_proxy] No IP address after detection")
+            return ProxyResponse(
+                status="error",
+                error="No IP address provided or detected."
+            )
+        
+        print(f"[start_proxy] Using IP address: {local_device_address}")
+            
         if hasattr(app.state, "bacnet_manager") and app.state.bacnet_manager:
             await app.state.bacnet_manager.stop()
             if hasattr(app.state,
@@ -58,7 +71,7 @@ async def start_proxy(local_device_address: Optional[str] = Form(None)):
             app.state.bacnet_manager.inbound_server.serve_forever())
 
         app.state.bacnet_proxy_peer = await app.state.bacnet_manager.get_proxy(
-            (local_device_address, 0),
+            (local_device_address, 0), 
             local_device_address=local_device_address)
         app.state.bacnet_proxy_local_address = local_device_address
 
