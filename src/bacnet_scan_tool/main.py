@@ -75,10 +75,9 @@ async def start_proxy(local_device_address: Optional[str] = Form(None)):
             local_device_address=local_device_address)
         app.state.bacnet_proxy_local_address = local_device_address
 
-        asyncio.create_task(
-            app.state.bacnet_manager.wait_peer_registered(
-                peer=app.state.bacnet_proxy_peer, timeout=5))
-        await asyncio.sleep(1)
+        await app.state.bacnet_manager.wait_peer_registered(
+            peer=app.state.bacnet_proxy_peer, timeout=5)
+        
         return ProxyResponse(status="done", address=local_device_address)
     except Exception as e:
         return ProxyResponse(status="error", error=str(e))
