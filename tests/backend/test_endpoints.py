@@ -8,8 +8,8 @@ from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from fastapi.testclient import TestClient
 import asyncio
 
-from bacnet_scan_tool.main import app
-from bacnet_scan_tool.models import (
+from bacnet_scan_api.main import app
+from bacnet_scan_api.models import (
     ProxyResponse, IPAddress, ScanResponse, PropertyReadResponse,
     DevicePropertiesResponse, WhoIsResponse, PingResponse,
     ObjectListNamesResponse, SavedScansResponse, ScannedPointsResponse
