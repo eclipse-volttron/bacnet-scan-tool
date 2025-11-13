@@ -1,6 +1,6 @@
 [project]
 name = "bacnet-scan-tool"
-version = "0.1.0rc0"
+version = "0.1.0rc2"
 description = ""
 authors = [
     {name = "C. Allwardt",email = "3979063+craig8@users.noreply.github.com"}
@@ -24,8 +24,8 @@ pydantic = ">=2.10.6,<3.0.0"
 sqlmodel = ">=0.0.8,<1.0.0"
 click = ">=8.1.8,<9.0.0"
 uvicorn = ">=0.34.0,<0.35.0"
-protocol-proxy = { git = "https://github.com/riley206-pnnl/lib-protocol-proxy-fixed.git", rev = "bus_adapter_changes" }
-protocol-proxy-bacnet = { git = "https://github.com/riley206-pnnl/lib-protocol-proxy-bacnet-fixed.git", rev = "merge_of_rileys_code_and_latest_changes" }
+protocol-proxy = ">=2.0.0rc2"
+protocol-proxy-bacnet = ">=2.0.0rc2"
 bacpypes3 = "^0.0.102"
 psutil = "^7.0.0"
 gevent = "^25.5.1"
