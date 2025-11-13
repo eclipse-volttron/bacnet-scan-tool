@@ -560,7 +560,7 @@ async def discover_networks(verbose: bool = Query(
         custom_networks = []
         try:
             from pathlib import Path
-            cache_dir = Path.home() / '.bacnet_scan_tool'
+            cache_dir = Path.home() / '.bacnet_scan_api'
             custom_networks_file = cache_dir / 'custom_networks.json'
 
             if custom_networks_file.exists():

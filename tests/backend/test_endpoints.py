@@ -62,8 +62,8 @@ class TestStartProxy:
     
     def test_start_proxy_auto_detect(self, client, mock_bacnet_manager, mock_bacnet_peer):
         """Test starting proxy with auto-detected address"""
-        with patch('bacnet_scan_tool.main.AsyncioProtocolProxyManager') as MockManager, \
-             patch('bacnet_scan_tool.main.discover_networks_for_bacnet') as mock_discover:
+        with patch('bacnet_scan_api.main.AsyncioProtocolProxyManager') as MockManager, \
+             patch('bacnet_scan_api.main.discover_networks_for_bacnet') as mock_discover:
             
             MockManager.get_manager.return_value = mock_bacnet_manager
             mock_bacnet_manager.get_proxy.return_value = mock_bacnet_peer
