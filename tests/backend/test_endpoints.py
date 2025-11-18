@@ -4,17 +4,11 @@ Pytest unit tests for BACnet Scan Tool FastAPI endpoints
 import pytest
 import json
 import subprocess
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 from fastapi.testclient import TestClient
 import asyncio
 
 from bacnet_scan_api.main import app
-from bacnet_scan_api.models import (
-    ProxyResponse, IPAddress, ScanResponse, PropertyReadResponse,
-    DevicePropertiesResponse, WhoIsResponse, PingResponse,
-    ObjectListNamesResponse, SavedScansResponse, ScannedPointsResponse
-)
-
 
 @pytest.fixture
 def client():
@@ -49,7 +43,7 @@ class TestStartProxy:
     
     def test_start_proxy_with_address(self, client, mock_bacnet_manager, mock_bacnet_peer):
         """Test starting proxy with explicit local address"""
-        with patch('bacnet_scan_tool.main.AsyncioProtocolProxyManager') as MockManager:
+        with patch('bacnet_scan_api.main.AsyncioProtocolProxyManager') as MockManager:
             MockManager.get_manager.return_value = mock_bacnet_manager
             mock_bacnet_manager.get_proxy.return_value = mock_bacnet_peer
             
@@ -77,7 +71,7 @@ class TestStartProxy:
     
     def test_start_proxy_error_handling(self, client):
         """Test error handling when proxy fails to start"""
-        with patch('bacnet_scan_tool.main.AsyncioProtocolProxyManager') as MockManager:
+        with patch('bacnet_scan_api.main.AsyncioProtocolProxyManager') as MockManager:
             MockManager.get_manager.side_effect = Exception("Connection failed")
             
             response = client.post("/start_proxy", data={"local_device_address": "192.168.1.173/24"})
@@ -484,7 +478,7 @@ class TestDiscoverNetworks:
     @pytest.mark.asyncio
     async def test_discover_networks_success(self, client):
         """Test successful network discovery"""
-        with patch('bacnet_scan_tool.main.discover_networks_for_bacnet') as mock_discover:
+        with patch('bacnet_scan_api.main.discover_networks_for_bacnet') as mock_discover:
             mock_discover.return_value = {
                 "interface_networks": ["192.168.1.0/24"],
                 "route_networks": ["10.0.0.0/8"]
@@ -499,7 +493,7 @@ class TestDiscoverNetworks:
     
     def test_discover_networks_with_verbose(self, client):
         """Test network discovery with verbose output"""
-        with patch('bacnet_scan_tool.main.discover_networks_for_bacnet') as mock_discover:
+        with patch('bacnet_scan_api.main.discover_networks_for_bacnet') as mock_discover:
             mock_discover.return_value = {"interface_networks": ["192.168.1.0/24"]}
             
             response = client.get("/discover_networks?verbose=true")
@@ -526,7 +520,7 @@ class TestCustomNetworks:
         response = client.post("/networks/add", data={"network": "invalid"})
         
         assert response.status_code == 200
-        data = response.json()
+        #data = response.json()
         # Should handle invalid format gracefully
     
     def test_remove_custom_network(self, client):
