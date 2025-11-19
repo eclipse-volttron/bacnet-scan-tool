@@ -520,8 +520,8 @@ class TestCustomNetworks:
         response = client.post("/networks/add", data={"network": "invalid"})
         
         assert response.status_code == 200
-        #data = response.json()
-        # Should handle invalid format gracefully
+        data = response.json()
+        assert data.get("status") in ["error", "done"]
     
     def test_remove_custom_network(self, client):
         """Test removing a custom network"""
