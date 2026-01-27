@@ -113,9 +113,9 @@ Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
      - **Tip:** Use this if you know your BACnet device is on the same network as your Windows host. You can use the returned IP to determine the correct subnet for scanning.
 
 4. **Scan for BACnet Devices**
-   - **POST /bacnet/scan_ip_range**
-     - **Form Data:** `network_str` (CIDR, e.g., `192.168.1.0/24`)
-     - **Description:** Scans the given IP range for BACnet devices and returns a list of discovered devices with their identifiers and object names.
+   - **POST /bacnet/scan_subnet**
+     - **Form Data:** `subnet` (CIDR, e.g., `192.168.1.0/24`)
+     - **Description:** Scans the given subnet for BACnet devices and returns a list of discovered devices with their identifiers and object names.
      - **Returns (success):**
        ```json
        {
