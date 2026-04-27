@@ -32,6 +32,14 @@ git clone https://github.com/eclipse-volttron/bacnet-scan-tool.git
 cd bacnet-scan-tool
 ```
 
+## Installation via Pip
+
+You can install the BACnet Scan Tool API directly from PyPI. Note that while the project is in Release Candidate phase, you must use the `--pre` flag:
+
+```bash
+pip install bacnet-scan-api --pre
+```
+
 ## Install Poetry
 
 This project uses [Poetry](https://python-poetry.org/) for dependency management. To install Poetry, run:
