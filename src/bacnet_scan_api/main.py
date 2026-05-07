@@ -72,7 +72,7 @@ async def start_proxy(local_device_address: Optional[str] = Form(None)):
 
         app.state.bacnet_proxy_peer = await app.state.bacnet_manager.get_proxy(
             (local_device_address, 0), 
-            local_device_address=local_device_address)
+            local_interface=local_device_address)
         app.state.bacnet_proxy_local_address = local_device_address
 
         await app.state.bacnet_manager.wait_peer_registered(
