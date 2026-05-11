@@ -25,7 +25,7 @@ sqlmodel = ">=0.0.8,<1.0.0"
 click = ">=8.1.8,<9.0.0"
 uvicorn = ">=0.34.0,<0.35.0"
 protocol-proxy = ">=2.0.0rc2"
-protocol-proxy-bacnet = ">=2.0.0rc4,<3.0.0"
+protocol-proxy-bacnet = ">=2.0.0rc3,<3.0.0"
 bacpypes3 = "^0.0.102"
 psutil = "^7.0.0"
 gevent = "^25.5.1"
@@ -40,6 +40,9 @@ dev = [
     "pytest-asyncio (>=1.2.0,<2.0.0)",
     "httpx (>=0.28.1,<0.29.0)"
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
 
 [tool.poetry.scripts]
 fake-bacnet-device = "bacnet_scan_api.fake_device:main"
