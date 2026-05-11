@@ -24,6 +24,38 @@ from .models import (IPAddress, LocalIPResponse, ProxyResponse, ScanResponse,
 app = FastAPI()
 
 
+async def _terminate_proxy_processes(manager: Any,
+                                     terminate_timeout: float = 5.0,
+                                     kill_timeout: float = 2.0) -> None:
+    """Terminate proxy subprocesses created by the protocol proxy manager."""
+    peers = getattr(manager, "peers", {}) or {}
+    if not isinstance(peers, dict):
+        return
+
+    for peer in list(peers.values()):
+        process = getattr(peer, "process", None)
+        if not process or process.returncode is not None:
+            continue
+
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            continue
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=terminate_timeout)
+            continue
+        except asyncio.TimeoutError:
+            pass
+
+        try:
+            process.kill()
+        except ProcessLookupError:
+            continue
+
+        await asyncio.wait_for(process.wait(), timeout=kill_timeout)
+
+
 @app.post("/start_proxy", response_model=ProxyResponse)
 async def start_proxy(local_device_address: Optional[str] = Form(None)):
     """
@@ -782,10 +814,12 @@ async def stop_proxy():
     """
     try:
         if hasattr(app.state, "bacnet_manager") and app.state.bacnet_manager:
-            await app.state.bacnet_manager.stop()
+            manager = app.state.bacnet_manager
             if hasattr(app.state,
                        "bacnet_server_task") and app.state.bacnet_server_task:
                 app.state.bacnet_server_task.cancel()
+            await manager.stop()
+            await _terminate_proxy_processes(manager)
             await asyncio.sleep(0.5)
             app.state.bacnet_manager = None
         if hasattr(app.state, "bacnet_server_task"):

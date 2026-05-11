@@ -34,10 +34,10 @@ cd bacnet-scan-tool
 
 ## Installation via Pip
 
-You can install the BACnet Scan Tool API directly from PyPI. Note that while the project is in Release Candidate phase, you must use the `--pre` flag:
+You can install the BACnet Scan Tool API directly from PyPI:
 
 ```bash
-pip install bacnet-scan-api --pre
+pip install bacnet-scan-api
 ```
 
 ## Install Poetry
@@ -79,6 +79,20 @@ poetry run uvicorn bacnet_scan_api.main:app --reload
 
 The server will be available at [http://127.0.0.1:8000](http://127.0.0.1:8000).
 Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+### Start a Fake BACnet Device
+
+For local testing, run a fake BACnet device with sample temperature, humidity, damper, door, and setpoint objects:
+
+```bash
+fake-bacnet-device
+```
+
+To avoid the default BACnet/IP port or to run a short smoke test:
+
+```bash
+fake-bacnet-device --port 47819 --run-seconds 30
+```
 
 
 
