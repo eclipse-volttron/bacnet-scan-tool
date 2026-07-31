@@ -5,7 +5,7 @@ description = ""
 authors = [
     {name = "C. Allwardt",email = "3979063+craig8@users.noreply.github.com"}
 ]
-license = {text = "Apache 2.0"}
+license = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.10,<4.0"
 
