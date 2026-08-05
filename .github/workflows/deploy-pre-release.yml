@@ -2,9 +2,22 @@
 name: Deploy Pre-Release Artifacts
 
 on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'README.md'
+      - '.github/workflows/deploy-pre-release.yml'
   schedule:
     - cron: '0 12 * * *' # Run everyday at noon
   workflow_dispatch: # Allows manual triggering of the workflow
+
+concurrency:
+  group: deploy-pre-release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write

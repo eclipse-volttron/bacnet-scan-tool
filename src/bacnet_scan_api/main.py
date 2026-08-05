@@ -24,6 +24,38 @@ from .models import (IPAddress, LocalIPResponse, ProxyResponse, ScanResponse,
 app = FastAPI()
 
 
+async def _terminate_proxy_processes(manager: Any,
+                                     terminate_timeout: float = 5.0,
+                                     kill_timeout: float = 2.0) -> None:
+    """Terminate proxy subprocesses created by the protocol proxy manager."""
+    peers = getattr(manager, "peers", {}) or {}
+    if not isinstance(peers, dict):
+        return
+
+    for peer in list(peers.values()):
+        process = getattr(peer, "process", None)
+        if not process or process.returncode is not None:
+            continue
+
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            continue
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=terminate_timeout)
+            continue
+        except asyncio.TimeoutError:
+            pass
+
+        try:
+            process.kill()
+        except ProcessLookupError:
+            continue
+
+        await asyncio.wait_for(process.wait(), timeout=kill_timeout)
+
+
 @app.post("/start_proxy", response_model=ProxyResponse)
 async def start_proxy(local_device_address: Optional[str] = Form(None)):
     """
@@ -31,18 +63,31 @@ async def start_proxy(local_device_address: Optional[str] = Form(None)):
     Returns status and address.
     """
     try:
+        print(f"[start_proxy] Received local_device_address: {local_device_address}")
         if not local_device_address:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 s.connect(("8.8.8.8", 80))
                 local_device_address = s.getsockname()[0]
                 s.close()
-            except Exception:
+                print(f"[start_proxy] Auto-detected IP: {local_device_address}")
+            except Exception as e:
+                print(f"[start_proxy] Auto-detection failed: {e}")
                 return ProxyResponse(
                     status="error",
-                    error=
-                    "Could not auto-detect local IP address. Please specify manually."
+                    error=f"Could not auto-detect local IP address. Please specify manually. Error: {str(e)}"
                 )
+        
+        # Validate we have a valid IP address
+        if not local_device_address:
+            print("[start_proxy] No IP address after detection")
+            return ProxyResponse(
+                status="error",
+                error="No IP address provided or detected."
+            )
+        
+        print(f"[start_proxy] Using IP address: {local_device_address}")
+            
         if hasattr(app.state, "bacnet_manager") and app.state.bacnet_manager:
             await app.state.bacnet_manager.stop()
             if hasattr(app.state,
@@ -58,14 +103,13 @@ async def start_proxy(local_device_address: Optional[str] = Form(None)):
             app.state.bacnet_manager.inbound_server.serve_forever())
 
         app.state.bacnet_proxy_peer = await app.state.bacnet_manager.get_proxy(
-            (local_device_address, 0),
-            local_device_address=local_device_address)
+            (local_device_address, 0), 
+            local_interface=local_device_address)
         app.state.bacnet_proxy_local_address = local_device_address
 
-        asyncio.create_task(
-            app.state.bacnet_manager.wait_peer_registered(
-                peer=app.state.bacnet_proxy_peer, timeout=5))
-        await asyncio.sleep(1)
+        await app.state.bacnet_manager.wait_peer_registered(
+            peer=app.state.bacnet_proxy_peer, timeout=5)
+        
         return ProxyResponse(status="done", address=local_device_address)
     except Exception as e:
         return ProxyResponse(status="error", error=str(e))
@@ -548,7 +592,7 @@ async def discover_networks(verbose: bool = Query(
         custom_networks = []
         try:
             from pathlib import Path
-            cache_dir = Path.home() / '.bacnet_scan_tool'
+            cache_dir = Path.home() / '.bacnet_scan_api'
             custom_networks_file = cache_dir / 'custom_networks.json'
 
             if custom_networks_file.exists():
@@ -770,10 +814,12 @@ async def stop_proxy():
     """
     try:
         if hasattr(app.state, "bacnet_manager") and app.state.bacnet_manager:
-            await app.state.bacnet_manager.stop()
+            manager = app.state.bacnet_manager
             if hasattr(app.state,
                        "bacnet_server_task") and app.state.bacnet_server_task:
                 app.state.bacnet_server_task.cancel()
+            await manager.stop()
+            await _terminate_proxy_processes(manager)
             await asyncio.sleep(0.5)
             app.state.bacnet_manager = None
         if hasattr(app.state, "bacnet_server_task"):
