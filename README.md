@@ -24,12 +24,20 @@ This tool is particularly useful for developers building web-based building auto
 
 ## Build
 
-To build the `bacnet-scan-tool`, ensure you have Python 3.10 or higher installed, then run the following commands:
+To build the `bacnet-scan-api`, ensure you have Python 3.10 or higher installed, then run the following commands:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-repo/bacnet-scan-tool.git
+git clone https://github.com/eclipse-volttron/bacnet-scan-tool.git
 cd bacnet-scan-tool
+```
+
+## Installation via Pip
+
+You can install the BACnet Scan Tool API directly from PyPI:
+
+```bash
+pip install bacnet-scan-api
 ```
 
 ## Install Poetry
@@ -66,11 +74,25 @@ poetry install
 Start the server with Poetry:
 
 ```bash
-poetry run uvicorn bacnet_scan_tool.main:app --reload
+poetry run uvicorn bacnet_scan_api.main:app --reload
 ```
 
 The server will be available at [http://127.0.0.1:8000](http://127.0.0.1:8000).
 Access the UI here: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+### Start a Fake BACnet Device
+
+For local testing, run a fake BACnet device with sample temperature, humidity, damper, door, and setpoint objects:
+
+```bash
+fake-bacnet-device
+```
+
+To avoid the default BACnet/IP port or to run a short smoke test:
+
+```bash
+fake-bacnet-device --port 47819 --run-seconds 30
+```
 
 
 
